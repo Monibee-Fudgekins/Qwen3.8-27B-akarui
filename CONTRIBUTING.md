@@ -15,8 +15,36 @@ failure), not just an opinion.
 3. Add or update tests for any code change (`tests/`).
 4. Run the test suite and the repository validator before opening
    the pull request.
-5. Update `CHANGELOG.md` under the Unreleased section.
+5. Do not hand-edit `CHANGELOG.md` — releases are automated (see
+   "Commit messages" below); release-please generates the changelog
+   from commit messages.
 6. Describe what you changed, why, and what you measured.
+
+## Commit messages
+
+All commits use [Conventional Commits](https://www.conventionalcommits.org/),
+because releases are automated with release-please: the version bump
+and the changelog entry for a release are derived from the commit
+messages since the previous release.
+
+- `feat:` — a new feature; triggers a **minor** version bump.
+- `fix:` and `perf:` — a bug fix or a performance improvement;
+  triggers a **patch** version bump.
+- `feat!:` or `fix!:` (or a `BREAKING CHANGE:` footer) — a breaking
+  change; triggers a **major** version bump.
+- `docs:`, `chore:`, `ci:`, `test:`, `refactor:` — no version bump
+  on their own and no changelog entry.
+- A commit that does **not** follow this format produces no release
+  and no changelog entry, so keep the prefix on every commit,
+  including documentation and housekeeping changes.
+
+Examples:
+
+```
+feat: add 11h runtime guard to SFT training
+fix: refuse kernel packaging when train.jsonl is missing
+docs: document conventional commits for release-please
+```
 
 ## Data contributions
 

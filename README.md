@@ -352,3 +352,13 @@ and the original Qwen3.8 model.
 
 See `CHANGELOG.md` and `model_cards/RELEASE_HISTORY.md`. Current
 version: **0.1.0 — initial infrastructure; no model released yet.**
+
+Releases are automated with
+[release-please](https://github.com/googleapis/release-please):
+on each push to `main` it inspects the conventional commits since
+the last release and opens a release pull request that bumps the
+version in `.release-please-manifest.json`, updates `CHANGELOG.md`,
+and creates the `vX.Y.Z` git tag and GitHub release when merged.
+No release is created by hand, and non-conventional commits produce
+no release. See `CONTRIBUTING.md` for the commit-message format and
+`release-please-config.json` for the configuration.
