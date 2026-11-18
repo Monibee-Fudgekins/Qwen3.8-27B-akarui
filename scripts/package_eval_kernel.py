@@ -63,12 +63,16 @@ KERNEL_IDS = {
     "base": "monibeefudgekins/akarui-eval-baseline",
 }
 KERNEL_TITLES = {
-    # ASCII only: the Kaggle SaveKernel API rejected the push (HTTP 400)
-    # when these titles contained an em-dash. The sibling Glimmer and
-    # gemma kernels use ASCII titles and push fine.
-    "candidate": "Akarui evaluation - candidate adapter (held-out benchmark)",
-    "base": "Akarui evaluation - base model baseline (held-out benchmark)",
+    # ASCII only, and at most 50 characters: the Kaggle SaveKernel API
+    # rejects longer titles with HTTP 400 "The title cannot exceed 50
+    # characters." (seen live 2026-11-18: the 60-char base title failed
+    # three pushes before the diagnostic printed the API's message).
+    # The em-dash that used to be here was NOT the problem.
+    "candidate": "Akarui evaluation - candidate adapter",
+    "base": "Akarui evaluation - base model baseline",
 }
+#: Kaggle kernel titles are capped at 50 characters (SaveKernel API).
+MAX_TITLE_LENGTH = 50
 #: The training kernel whose output (the adapter) the candidate-mode
 #: eval kernel mounts as an input.
 TRAINING_KERNEL_ID = "monibeefudgekins/akarui-sft-training"
@@ -141,6 +145,12 @@ def build_kernel(repo_root: Path, out_dir: Path, mode: str) -> dict:
     shutil.copy2(repo_root / "data" / "train.jsonl", out_dir / "data" / "train.jsonl")
 
     kernel_id = KERNEL_IDS[mode]
+    title = KERNEL_TITLES[mode]
+    if len(title) > MAX_TITLE_LENGTH:
+        raise ValueError(
+            f"refusing to package: eval kernel title is {len(title)} chars, "
+            f"over Kaggle's {MAX_TITLE_LENGTH}-char limit: {title!r}"
+        )
     metadata = {
         "id": kernel_id,
         "title": KERNEL_TITLES[mode],

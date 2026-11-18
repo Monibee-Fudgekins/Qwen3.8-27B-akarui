@@ -46,6 +46,10 @@ from pathlib import Path
 
 KERNEL_ID = "monibeefudgekins/akarui-sft-training"
 KERNEL_TITLE = "Akarui SFT training (QLoRA, Qwen3.8-27B)"
+#: Kaggle kernel titles are capped at 50 characters (SaveKernel API
+#: rejects longer titles with HTTP 400). Guarded in build_kernel so a
+#: too-long title fails at packaging time, not at push time.
+MAX_TITLE_LENGTH = 50
 NOTEBOOK_FILE = "05_sft_training.ipynb"
 NOTEBOOK_SRC = Path("notebooks") / NOTEBOOK_FILE
 
@@ -239,6 +243,11 @@ def build_kernel(repo_root: Path, out_dir: Path) -> dict:
         out_dir / "requirements-kaggle.txt",
     )
 
+    if len(KERNEL_TITLE) > MAX_TITLE_LENGTH:
+        raise ValueError(
+            f"refusing to package: kernel title is {len(KERNEL_TITLE)} chars, "
+            f"over Kaggle's {MAX_TITLE_LENGTH}-char limit: {KERNEL_TITLE!r}"
+        )
     metadata = {
         "id": KERNEL_ID,
         "title": KERNEL_TITLE,

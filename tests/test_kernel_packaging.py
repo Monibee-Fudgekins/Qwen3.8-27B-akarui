@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import package_eval_kernel
 import package_kernel
 import trigger_kaggle
 from src.training.runtime_guard import RuntimeGuard, resolve_runtime_guard
@@ -290,3 +291,72 @@ def test_prepare_plan_includes_runtime_guard():
     assert plan["runtime_guard"]["max_runtime_hours"] == 10.0
     assert plan["runtime_guard"]["max_steps"] == 600
     assert plan["strategy"]["strategy"] == "unresolved"
+
+
+# --- Kaggle kernel title length -----------------------------------------
+# The SaveKernel API rejects titles over 50 chars with HTTP 400
+# ("The title cannot exceed 50 characters."). Seen live 2026-11-18:
+# the 60-char base eval title failed three pushes before the
+# diagnostic printed the API's message. These tests pin the limit.
+
+
+def test_all_kernel_titles_within_kaggle_limit():
+    assert len(package_kernel.KERNEL_TITLE) <= package_kernel.MAX_TITLE_LENGTH
+    for mode, title in package_eval_kernel.KERNEL_TITLES.items():
+        assert len(title) <= package_eval_kernel.MAX_TITLE_LENGTH, mode
+
+
+def test_package_refuses_overlong_title(tmp_path: Path, monkeypatch):
+    repo = _minimal_repo(tmp_path, train_lines=_jsonl(VALID_RECORDS))
+    monkeypatch.setattr(
+        package_kernel, "KERNEL_TITLE", "x" * (package_kernel.MAX_TITLE_LENGTH + 1)
+    )
+    with pytest.raises(ValueError, match="over Kaggle"):
+        package_kernel.build_kernel(repo, tmp_path / "kernel")
+
+
+def _minimal_eval_repo(tmp_path: Path) -> Path:
+    """Build a minimal repo tree with the files package_eval_kernel needs."""
+    repo = tmp_path / "eval-repo"
+    (repo / "notebooks").mkdir(parents=True)
+    shutil.copy2(ROOT / "notebooks" / "07_evaluation.ipynb",
+                 repo / "notebooks" / "07_evaluation.ipynb")
+    shutil.copytree(ROOT / "src", repo / "src",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    (repo / "scripts").mkdir()
+    for name in ("evaluate.py", "verify_release.py", "kaggle_auth.py"):
+        shutil.copy2(ROOT / "scripts" / name, repo / "scripts" / name)
+    (repo / "configs").mkdir()
+    shutil.copy2(ROOT / "configs" / "evaluation.yaml",
+                 repo / "configs" / "evaluation.yaml")
+    (repo / "evaluation").mkdir()
+    shutil.copy2(ROOT / "evaluation" / "benchmark_manifest.json",
+                 repo / "evaluation" / "benchmark_manifest.json")
+    shutil.copy2(ROOT / "requirements-kaggle.txt",
+                 repo / "requirements-kaggle.txt")
+    (repo / "data").mkdir()
+    (repo / "data" / "train.jsonl").write_text(
+        "\n".join(_jsonl(VALID_RECORDS)) + "\n"
+    )
+    return repo
+
+
+def test_eval_package_writes_short_titles(tmp_path: Path):
+    repo = _minimal_eval_repo(tmp_path)
+    for mode in ("candidate", "base"):
+        out = tmp_path / f"eval-{mode}"
+        package_eval_kernel.build_kernel(repo, out, mode)
+        metadata = json.loads((out / "kernel-metadata.json").read_text())
+        assert len(metadata["title"]) <= package_eval_kernel.MAX_TITLE_LENGTH
+        assert metadata["id"] == package_eval_kernel.KERNEL_IDS[mode]
+
+
+def test_eval_package_refuses_overlong_title(tmp_path: Path, monkeypatch):
+    repo = _minimal_eval_repo(tmp_path)
+    monkeypatch.setitem(
+        package_eval_kernel.KERNEL_TITLES,
+        "base",
+        "x" * (package_eval_kernel.MAX_TITLE_LENGTH + 1),
+    )
+    with pytest.raises(ValueError, match="over Kaggle"):
+        package_eval_kernel.build_kernel(repo, tmp_path / "eval", "base")
