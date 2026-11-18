@@ -1,0 +1,35 @@
+# Release Please — automated CHANGELOG, GitHub releases, and version bumps.
+#
+# This workflow CANNOT be pushed with the GitHub App (it 403s on
+# .github/workflows/*). It must be created through the GitHub web UI:
+#   Repo -> Add file -> Create new file -> .github/workflows/release-please.yml
+#   (paste this file verbatim), then commit directly to main.
+#
+# On each push to main, release-please inspects the commits since the
+# last release and, when it finds conventional commits (feat:/fix:/...),
+# opens a release PR that bumps .release-please-manifest.json, updates
+# CHANGELOG.md, and tags the release (vX.Y.Z) when the PR is merged.
+# Commits that are not conventional produce no release.
+#
+# No credentials are needed: the workflow uses the built-in
+# GITHUB_TOKEN with contents: write and pull-requests: write.
+
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
