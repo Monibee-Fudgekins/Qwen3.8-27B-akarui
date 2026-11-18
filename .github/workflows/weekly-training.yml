@@ -119,6 +119,12 @@ jobs:
         env:
           KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
 
+      - name: Diagnose failed kernel push
+        if: ${{ failure() }}
+        run: python scripts/diagnose_kernel_push.py --notebook-dir kernels/eval
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
+
       - name: Download kernel outputs
         if: ${{ steps.training.outputs.skipped != 'true' }}
         id: outputs
