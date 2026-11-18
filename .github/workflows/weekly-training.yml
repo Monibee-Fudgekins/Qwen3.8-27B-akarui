@@ -4,7 +4,7 @@
 # the 27B model there. It orchestrates Kaggle kernels via
 # scripts/trigger_kaggle.py (submit + poll, same pattern as before):
 #
-#   1. Trigger the SFT training kernel (Mon 08:00 UTC, or dispatch).
+#   1. Trigger the SFT training kernel (Wed 08:00 UTC, or dispatch).
 #      A weekly-quota refusal records skipped_quota and ends the cycle.
 #   2. Package + trigger the eval kernel (notebook 07, GPU) in the
 #      dispatched mode: 'candidate' evaluates the trained adapter
@@ -40,7 +40,7 @@ name: Weekly Akarui Training
 
 on:
   schedule:
-    - cron: "0 8 * * 1"
+    - cron: "0 8 * * 3"
   workflow_dispatch:
     inputs:
       mode:
