@@ -6,9 +6,12 @@ Checks, in order:
 2. The evaluation results exist and contain a normalized competition
    score.
 3. The promotion gates in the evaluation config hold against the
-   champion's results: the candidate must improve the normalized score
-   by at least ``min_normalized_score_improvement`` and no regression
-   probe may drop by more than ``max_allowed_regression``.
+   champion's results (or, when no champion exists yet, against the
+   recorded base-model baseline): the candidate must improve the
+   normalized score by at least ``min_normalized_score_improvement``
+   and no regression probe may drop by more than
+   ``max_allowed_regression``. A candidate with no measured baseline
+   to beat can never pass -- the base model must be measured first.
 
 Exit codes:
     0  Release is verified and may be published.
@@ -76,41 +79,58 @@ def check_provenance(manifest: dict) -> list[str]:
 def check_gates(
     evaluation: dict, champion: dict | None, gates: dict
 ) -> list[str]:
-    """Return failure reasons when the promotion gates do not hold."""
+    """Return failure reasons when the promotion gates do not hold.
+
+    The reference is the champion when one is given, otherwise the
+    baseline recorded in the evaluation
+    (``baseline_normalized_score``). Either way the candidate must
+    beat the reference by at least
+    ``min_normalized_score_improvement`` -- the first promotion is
+    gated on the measured base model, not waved through for having
+    a baseline field present. Submission validity and benchmark
+    completeness are enforced in both branches.
+    """
     reasons: list[str] = []
     score = evaluation.get("normalized_score")
     if score is None:
         reasons.append("evaluation results have no normalized_score")
         return reasons
-    if champion is None:
-        # No champion exists yet: the first release needs a recorded
-        # baseline, not a comparison. Require the baseline score field.
-        if evaluation.get("baseline_normalized_score") is None:
-            reasons.append(
-                "no champion results provided and evaluation has no "
-                "baseline_normalized_score to compare against"
-            )
-        return reasons
 
-    champion_score = champion.get("normalized_score")
-    if champion_score is None:
-        reasons.append("champion results have no normalized_score")
+    reference: float | None = None
+    reference_label = ""
+    reference_probes: dict = {}
+    if champion is not None:
+        reference = champion.get("normalized_score")
+        reference_label = "champion"
+        reference_probes = champion.get("regression_probes", {}) or {}
+        if reference is None:
+            reasons.append("champion results have no normalized_score")
+            return reasons
+    elif evaluation.get("baseline_normalized_score") is not None:
+        reference = evaluation.get("baseline_normalized_score")
+        reference_label = "baseline"
+        reference_probes = evaluation.get("baseline_regression_probes", {}) or {}
+    if reference is None:
+        reasons.append(
+            "no champion results provided and evaluation has no "
+            "baseline_normalized_score to compare against; the base "
+            "model must be measured before the first promotion can pass"
+        )
         return reasons
 
     min_improvement = float(gates.get("min_normalized_score_improvement", 0.01))
-    improvement = float(score) - float(champion_score)
+    improvement = float(score) - float(reference)
     if improvement < min_improvement:
         reasons.append(
-            f"candidate normalized score {score} improves on champion "
-            f"{champion_score} by {improvement:.4f}, below the required "
+            f"candidate normalized score {score} improves on {reference_label} "
+            f"{reference} by {improvement:.4f}, below the required "
             f"{min_improvement}"
         )
 
     max_regression = float(gates.get("max_allowed_regression", 0.02))
     candidate_probes = evaluation.get("regression_probes", {}) or {}
-    champion_probes = champion.get("regression_probes", {}) or {}
     for name, candidate_value in candidate_probes.items():
-        baseline_value = champion_probes.get(name)
+        baseline_value = reference_probes.get(name)
         if baseline_value is None:
             continue
         drop = float(baseline_value) - float(candidate_value)
@@ -130,6 +150,25 @@ def check_gates(
                 f"submission validity {validity} is below the required "
                 f"{min_validity}"
             )
+
+    results = evaluation.get("results")
+    if isinstance(results, list):
+        if not results:
+            reasons.append("evaluation results list is empty")
+        else:
+            unmeasured = [
+                entry.get("competition_id")
+                for entry in results
+                if isinstance(entry, dict)
+                and entry.get("normalized_score") is None
+            ]
+            if unmeasured:
+                reasons.append(
+                    "benchmark incomplete: "
+                    f"{len(unmeasured)} of {len(results)} competition(s) "
+                    "unmeasured: " + ", ".join(str(c) for c in unmeasured[:5])
+                    + (" (+ more)" if len(unmeasured) > 5 else "")
+                )
     return reasons
 
 

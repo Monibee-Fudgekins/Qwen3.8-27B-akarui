@@ -18,13 +18,17 @@ kaggle.json
 .ipynb_checkpoints
 
 # Packaged kernel directories are build artifacts, rebuilt by
-# scripts/package_kernel.py at trigger time; they carry a copy of
-# data/train.jsonl, which is pushed separately. The README in
-# kernels/sft/ is the exception: it is committed as documentation.
+# scripts/package_kernel.py / scripts/package_eval_kernel.py at trigger
+# time; they carry a copy of data/train.jsonl, which is pushed
+# separately. The READMEs in kernels/sft/ and kernels/eval/ are the
+# exception: they are committed as documentation.
 kernels/*
 !kernels/sft/
 kernels/sft/*
 !kernels/sft/README.md
+!kernels/eval/
+kernels/eval/*
+!kernels/eval/README.md
 
 # Training outputs and checkpoints (large; never commit)
 output/

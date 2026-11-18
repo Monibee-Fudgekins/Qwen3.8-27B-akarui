@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from kaggle_auth import configure_kaggle_auth  # noqa: E402
 from verify_release import verify_release  # noqa: E402
 
+from src.evaluation.baseline import load_measured  # noqa: E402
 from src.publishing.kaggle_publisher import (  # noqa: E402
     DEFAULT_TAGS,
     MODEL_SLUG,
@@ -138,24 +139,22 @@ def stage_release(
     return staging_dir
 
 
-def _measured_champion_path(path: Path) -> Path | None:
-    """Return *path* only when it holds a measured champion score.
+def _measured_reference_path(champion_path: Path, baseline_path: Path) -> Path | None:
+    """Return the promotion reference file, when one is measured.
 
-    The shipped ``evaluation/baseline_results.json`` is an honest
-    not-measured template (``normalized_score`` is null). Treating it
-    as a champion would make verification fail on the missing score
-    instead of falling back to the baseline recorded in the candidate's
-    own evaluation results. A missing or unparseable file also counts
-    as no champion.
+    The measured champion (``evaluation/champion_results.json``)
+    wins when one exists; otherwise the measured baseline
+    (``evaluation/baseline_results.json``) is the reference for the
+    first promotion. The shipped baseline file is an honest
+    not-measured template (``normalized_score`` is null), so it
+    counts as no reference at all -- verification then fails on the
+    missing baseline instead of publishing against nothing. A
+    missing or unparseable file also counts as no reference.
     """
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    if isinstance(payload, dict) and payload.get("normalized_score") is not None:
-        return path
+    if load_measured(champion_path) is not None:
+        return champion_path
+    if load_measured(baseline_path) is not None:
+        return baseline_path
     return None
 
 
@@ -214,7 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--provenance", required=True, help="Provenance manifest JSON")
     parser.add_argument("--evaluation", default="evaluation/results.json")
-    parser.add_argument("--champion", default="evaluation/baseline_results.json")
+    parser.add_argument("--champion", default="evaluation/champion_results.json")
+    parser.add_argument("--baseline", default="evaluation/baseline_results.json")
     parser.add_argument("--config", default="configs/evaluation.yaml")
     parser.add_argument(
         "--adapter", required=True, help="Adapter directory to publish"
@@ -245,15 +245,17 @@ def main(argv: list[str] | None = None) -> int:
     manifest = json.loads(provenance_path.read_text())
 
     # Gate 1: the automated release verification must pass.
-    # A champion file with no measured normalized_score (the shipped
-    # evaluation/baseline_results.json is an honest not-measured
-    # template) counts as "no champion yet", so verification falls back
-    # to the baseline recorded in the evaluation results.
-    champion_path = _measured_champion_path(Path(args.champion))
+    # The reference is the measured champion when one exists, else
+    # the measured baseline (first promotion). An unmeasured
+    # baseline template counts as no reference, so verification
+    # fails instead of publishing against nothing.
+    reference_path = _measured_reference_path(
+        Path(args.champion), Path(args.baseline)
+    )
     reasons = verify_release(
         provenance_path,
         Path(args.evaluation),
-        champion_path,
+        reference_path,
         Path(args.config),
     )
     if reasons:

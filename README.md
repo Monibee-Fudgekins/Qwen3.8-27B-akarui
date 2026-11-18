@@ -185,9 +185,10 @@ python scripts/train.py --config configs/sft.yaml
 The GitHub Actions weekly workflow (`weekly-training.yml`,
 Mondays 08:00 UTC) only orchestrates: it triggers the Kaggle
 training notebook via `scripts/trigger_kaggle.py` using the
-`KAGGLE_TOKEN` repository secret, then waits for the run to complete
-before evaluation and publication. GitHub-hosted runners never train
-the 27B model.
+`KAGGLE_TOKEN` repository secret, waits for the run to complete,
+then runs the automated evaluate-and-promote step described in
+"Promotion lifecycle" below. GitHub-hosted runners never train
+the 27B model and never load it — evaluation runs on Kaggle too.
 
 ### Kaggle kernel packaging
 
@@ -239,6 +240,79 @@ sibling Glimmer kernel's worst measured rate, not an Akarui
 measurement; the first real Akarui run must measure its own rate
 and the cap must be revised from it.
 
+## Promotion lifecycle
+
+Train → evaluate → gate → promote, or stay private. Training
+completing never implies promotion.
+
+1. **Train.** The weekly workflow triggers the SFT kernel on Kaggle
+   (`scripts/trigger_kaggle.py`). A quota refusal records
+   `skipped_quota` and the cycle ends — nothing was trained.
+2. **Evaluate.** A separate Kaggle **eval kernel** runs notebook 07
+   against the held-out benchmark and writes
+   `output/evaluation-results.json`. Evaluation runs on Kaggle
+   because it needs the 27B model loaded on a GPU: the
+   GitHub-hosted runner has no GPU, and the training kernel is
+   already budgeted to ~10h of Kaggle's 12h kill limit with no room
+   for a 12-competition eval. The eval kernel is packaged by
+   `scripts/package_eval_kernel.py` and triggered/polled with the
+   same `scripts/trigger_kaggle.py` pattern as training; in
+   candidate mode it mounts the training kernel's output (the
+   adapter) as a kernel input. See `kernels/eval/README.md`.
+3. **Gate.** On the runner, `scripts/evaluate_and_promote.py`
+   builds the provenance manifest (`scripts/build_provenance.py`,
+   from the training kernel's `training_manifest.json` plus the
+   adapter hashes) and enforces the gates in
+   `configs/evaluation.yaml` via `scripts/verify_release.py`: the
+   candidate must beat the current champion by at least
+   `min_normalized_score_improvement` (0.01), no regression probe
+   may drop by more than `max_allowed_regression` (0.02),
+   submission validity must clear `min_submission_validity` (0.9),
+   and every benchmark competition must be measured.
+4. **Promote, or stay private.** On a pass the adapter is uploaded
+   to the public Kaggle Model (`scripts/publish_kaggle.py`,
+   adapters only), `evaluation/champion_results.json` is updated to
+   the new champion, and a release record is written to
+   `releases/`. On a failure the adapter stays private/dev and is
+   NOT published; the workflow still exits 0, because a failing
+   gate is a normal outcome, not a broken build.
+
+**Baseline first.** The champion is the last promoted version's
+score; before any promotion exists, the reference is the base
+model's measured score in `evaluation/baseline_results.json`. That
+file is currently an honest not-measured template — no baseline has
+been measured, so **no promotion can pass yet**. The baseline is
+measured by running the eval kernel in base mode and recording the
+result:
+
+```bash
+python scripts/package_eval_kernel.py --mode base --out kernels/eval
+python scripts/trigger_kaggle.py --notebook-dir kernels/eval \
+    --kernel monibeefudgekins/akarui-eval-baseline \
+    --run-record output/kaggle-eval-run.json
+# after downloading the eval output:
+python scripts/record_baseline.py --evaluation output/eval/evaluation-results.json
+```
+
+`record_baseline.py` refuses unmeasured evaluations and refuses to
+overwrite an already-measured baseline without `--force`. No score
+is ever fabricated: until a solver is attached to the benchmark
+runner, evaluations record `not_run` with null scores and the gate
+fails closed.
+
+**Gate decisions are recorded.** Every decision — `promote`,
+`stay_private`, `blocked` (no measured reference), or `skipped`
+(quota) — is written to `releases/gate-decisions/` with the
+candidate and reference scores, sample size, champion version,
+benchmark version, and timestamp, and committed back to the repo by
+the weekly workflow.
+
+**Manual publication is unchanged.** `publish-model.yml` is still
+dispatch-only and still requires both the manual
+`confirm_gates_passed` approval and `verify_release.py` exit 0.
+The automated path never weakens it and never publishes through
+any other route.
+
 ## Inference examples
 
 Loading an adapter release (adapter weights are **not** a standalone
@@ -280,12 +354,18 @@ standalone models. Previous stable versions are never overwritten
 or deleted.
 
 ```bash
-# Build metadata and upload a validated variation version
-python scripts/publish_kaggle.py --variation qlora-sft --model-dir ./output/qlora-sft
+# Gated publication of a validated candidate (gate runs first; a
+# failing candidate is refused and nothing is uploaded)
+python scripts/publish_kaggle.py \
+    --provenance output/provenance.json \
+    --evaluation output/evaluation-results.json \
+    --adapter output/akarui-sft-v0 \
+    --release-version 1 --model-version qlora-sft-v1 --dry-run
 ```
 
 Publication requires a complete provenance manifest; the publisher
-refuses to upload without one. Metadata fields follow Kaggle's
+refuses to upload without one, and refuses when no measured
+champion or baseline exists to compare against. Metadata fields follow Kaggle's
 supported model metadata format (title, subtitle, description,
 licenses, tags, instances). Proposed tags — verify against the
 Kaggle model UI before publishing: `qwen`, `qwen3`,

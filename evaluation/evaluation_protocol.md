@@ -80,6 +80,45 @@ marked experimental. It is never promoted because training
 completed, and it never overwrites the previous stable release. The
 evaluation results are still recorded in the release history so the
 failure is visible and the experiment is not silently repeated.
+Every gate decision is recorded in `releases/gate-decisions/`
+(`promote` | `stay_private` | `blocked` | `skipped`, with both
+scores, sample size, champion version, and timestamp); the weekly
+workflow commits these records back to the repo.
+
+## Where evaluation runs
+
+Evaluation needs the 27B model loaded on a GPU, so it runs in a
+dedicated Kaggle eval kernel — not on the GitHub-hosted runner
+(no GPU) and not in the training kernel's tail (the training run is
+already budgeted to ~10h of Kaggle's 12h kill limit, with no room
+for a 12-competition eval). The eval kernel is packaged by
+`scripts/package_eval_kernel.py` (notebook 07; candidate mode mounts
+the training kernel's output as a kernel input, base mode evaluates
+the pinned base model) and triggered/polled with the same
+`scripts/trigger_kaggle.py` pattern as training. After it
+completes, the runner downloads `output/evaluation-results.json`
+and `scripts/evaluate_and_promote.py` runs the gate; only a pass
+publishes. The eval kernel draws from the same 30h/week Kaggle GPU
+quota as training, and its runtime is unmeasured until the first
+live run — if it is killed or errors, no results file exists, the
+gate fails closed, and the candidate stays private.
+
+## Baseline measurement
+
+The champion is the last promoted version's score
+(`evaluation/champion_results.json`). Before any promotion exists,
+the reference is the base model's measured score
+(`evaluation/baseline_results.json`). That file ships as an honest
+not-measured template; **no promotion can pass until it is
+measured**. Measurement: run the eval kernel in base mode
+(`package_eval_kernel.py --mode base`), download its
+`output/evaluation-results.json`, and run
+`scripts/record_baseline.py --evaluation <that file>`, which writes
+the canonical measured record and refuses unmeasured input or an
+already-measured baseline (without `--force`). The first candidate
+must then beat that measured baseline score by at least
+`min_normalized_score_improvement` — the gate compares against the
+baseline, it does not wave the first promotion through.
 
 ## Regression policy
 

@@ -21,4 +21,6 @@ versions use semantic versioning.
 - **1.0.0:** First stable competition-solving release (planned).
 
 A release is added here only when it has actually shipped. Weekly
-candidates that fail the promotion gates are not listed as releases.
+candidates that fail the promotion gates are not listed as releases;
+their gate decisions are recorded in `releases/gate-decisions/` and
+the champion (once one exists) in `evaluation/champion_results.json`.
