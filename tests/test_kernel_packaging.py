@@ -306,12 +306,33 @@ def test_all_kernel_titles_within_kaggle_limit():
         assert len(title) <= package_eval_kernel.MAX_TITLE_LENGTH, mode
 
 
+def test_all_kernel_titles_slugify_to_their_ids():
+    """Kaggle creates a kernel under its TITLE-derived slug when the
+    title does not slugify to the id, so the push "succeeds" at the
+    wrong URL as an unrun draft and the status poll finds nothing
+    (live failure 2026-11-18, run #5). Glimmer and gemma match."""
+    assert (
+        package_kernel._slugify(package_kernel.KERNEL_TITLE)
+        == package_kernel.KERNEL_ID.split("/", 1)[1]
+    )
+    for mode, title in package_eval_kernel.KERNEL_TITLES.items():
+        slug = package_eval_kernel.KERNEL_IDS[mode].split("/", 1)[1]
+        assert package_eval_kernel._slugify(title) == slug, mode
+
+
 def test_package_refuses_overlong_title(tmp_path: Path, monkeypatch):
     repo = _minimal_repo(tmp_path, train_lines=_jsonl(VALID_RECORDS))
     monkeypatch.setattr(
         package_kernel, "KERNEL_TITLE", "x" * (package_kernel.MAX_TITLE_LENGTH + 1)
     )
     with pytest.raises(ValueError, match="over Kaggle"):
+        package_kernel.build_kernel(repo, tmp_path / "kernel")
+
+
+def test_package_refuses_title_slug_mismatch(tmp_path: Path, monkeypatch):
+    repo = _minimal_repo(tmp_path, train_lines=_jsonl(VALID_RECORDS))
+    monkeypatch.setattr(package_kernel, "KERNEL_TITLE", "A Different Title")
+    with pytest.raises(ValueError, match="slugifies"):
         package_kernel.build_kernel(repo, tmp_path / "kernel")
 
 
@@ -360,3 +381,54 @@ def test_eval_package_refuses_overlong_title(tmp_path: Path, monkeypatch):
     )
     with pytest.raises(ValueError, match="over Kaggle"):
         package_eval_kernel.build_kernel(repo, tmp_path / "eval", "base")
+
+
+def test_eval_package_refuses_title_slug_mismatch(tmp_path: Path, monkeypatch):
+    repo = _minimal_eval_repo(tmp_path)
+    monkeypatch.setitem(
+        package_eval_kernel.KERNEL_TITLES, "base", "A Different Title"
+    )
+    with pytest.raises(ValueError, match="slugifies"):
+        package_eval_kernel.build_kernel(repo, tmp_path / "eval", "base")
+
+
+# --- trigger_kaggle status polling --------------------------------------
+
+
+def _cli_result(stdout: str = "", stderr: str = ""):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=0)
+
+
+def test_kernel_status_retries_unparseable_output(tmp_path: Path, monkeypatch):
+    calls = {"n": 0}
+
+    def fake_cli(args):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return _cli_result(stdout="", stderr="")
+        return _cli_result(
+            stdout='monibeefudgekins/akarui-eval-baseline has status "running"'
+        )
+
+    monkeypatch.setattr(trigger_kaggle, "_run_cli", fake_cli)
+    monkeypatch.setattr(trigger_kaggle.time, "sleep", lambda _: None)
+    assert (
+        trigger_kaggle.kernel_status("monibeefudgekins/akarui-eval-baseline")
+        == "running"
+    )
+    assert calls["n"] == 3
+
+
+def test_kernel_status_error_names_the_raw_output(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        trigger_kaggle,
+        "_run_cli",
+        lambda args: _cli_result(
+            stdout="", stderr="unexpected response (no status field)"
+        ),
+    )
+    monkeypatch.setattr(trigger_kaggle.time, "sleep", lambda _: None)
+    with pytest.raises(RuntimeError, match="unexpected response"):
+        trigger_kaggle.kernel_status("monibeefudgekins/akarui-eval-baseline")

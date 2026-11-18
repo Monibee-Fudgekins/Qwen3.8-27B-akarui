@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -63,16 +64,30 @@ KERNEL_IDS = {
     "base": "monibeefudgekins/akarui-eval-baseline",
 }
 KERNEL_TITLES = {
-    # ASCII only, and at most 50 characters: the Kaggle SaveKernel API
-    # rejects longer titles with HTTP 400 "The title cannot exceed 50
-    # characters." (seen live 2026-11-18: the 60-char base title failed
-    # three pushes before the diagnostic printed the API's message).
-    # The em-dash that used to be here was NOT the problem.
-    "candidate": "Akarui evaluation - candidate adapter",
-    "base": "Akarui evaluation - base model baseline",
+    # Titles MUST slugify to their kernel ids (see _slugify below):
+    # Kaggle's SaveKernel creates the kernel under the TITLE-derived
+    # slug when they differ, so the push "succeeds" but lands at the
+    # wrong URL as an unrun draft and the status poll of the intended
+    # slug finds nothing (seen live 2026-11-18, run #5). The previous
+    # titles ("Akarui evaluation - base model baseline", 39 chars)
+    # slugified to "akarui-evaluation-base-model-baseline", not
+    # "akarui-eval-baseline". Keep titles short (<= 50 chars, the
+    # SaveKernel limit) and matching their ids.
+    "candidate": "Akarui Eval Candidate",
+    "base": "Akarui Eval Baseline",
 }
 #: Kaggle kernel titles are capped at 50 characters (SaveKernel API).
 MAX_TITLE_LENGTH = 50
+
+
+def _slugify(text: str) -> str:
+    """Slugify an ASCII title the way Kaggle's CLI does (python-slugify).
+
+    Lowercase, collapse every run of non-alphanumeric characters to a
+    single hyphen, strip leading/trailing hyphens. Titles here are
+    ASCII-only, so no transliteration is needed.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 #: The training kernel whose output (the adapter) the candidate-mode
 #: eval kernel mounts as an input.
 TRAINING_KERNEL_ID = "monibeefudgekins/akarui-sft-training"
@@ -150,6 +165,14 @@ def build_kernel(repo_root: Path, out_dir: Path, mode: str) -> dict:
         raise ValueError(
             f"refusing to package: eval kernel title is {len(title)} chars, "
             f"over Kaggle's {MAX_TITLE_LENGTH}-char limit: {title!r}"
+        )
+    slug = kernel_id.split("/", 1)[1]
+    if _slugify(title) != slug:
+        raise ValueError(
+            f"refusing to package: eval kernel title {title!r} slugifies to "
+            f"{_slugify(title)!r}, not the kernel id {kernel_id!r}; Kaggle "
+            "would create the kernel under the title-derived slug, so the "
+            "push would land at the wrong URL and the status poll would fail"
         )
     metadata = {
         "id": kernel_id,

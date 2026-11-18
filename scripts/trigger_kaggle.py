@@ -55,6 +55,15 @@ POLL_INTERVAL_SECONDS = 300
 #: its push was refused while GitHub stayed green).
 QUOTA_MARKERS = ("weekly gpu quota", "weekly quota", "gpu quota")
 
+#: How many times to retry a status call whose output cannot be
+#: parsed at all, and how long to wait between attempts. The first
+#: poll can land seconds after the push, before the API serves the
+#: new kernel; an unparseable response then is propagation delay, not
+#: a dead kernel. (A response that does parse -- including one whose
+#: text contains "error" -- is returned immediately, not retried.)
+STATUS_PARSE_ATTEMPTS = 3
+STATUS_PARSE_RETRY_SECONDS = 30
+
 
 class QuotaExceededError(RuntimeError):
     """``kaggle kernels push`` was refused: weekly GPU quota exhausted."""
@@ -132,14 +141,34 @@ def ensure_packaged_kernel(notebook_dir: Path, repo_root: Path) -> None:
 
 
 def kernel_status(kernel: str) -> str:
-    """Return the Kaggle kernel status (e.g. ``complete``), lowercased."""
-    result = _run_cli(["kernels", "status", kernel])
-    output = (result.stdout + result.stderr).lower()
-    for status in ("complete", "error", "cancelled", "running", "queued"):
-        if status in output:
-            return status
+    """Return the Kaggle kernel status (e.g. ``complete``), lowercased.
+
+    Retries a few times when the status call's output cannot be parsed
+    at all (propagation delay right after a push). After the retries
+    it raises with the raw CLI output -- stdout and stderr -- so the
+    log shows what the status call actually returned instead of an
+    empty message.
+    """
+    last_output = ""
+    for attempt in range(STATUS_PARSE_ATTEMPTS):
+        result = _run_cli(["kernels", "status", kernel])
+        output = (result.stdout + result.stderr).lower()
+        last_output = (
+            f"stdout={result.stdout.strip()!r} "
+            f"stderr={result.stderr.strip()!r}"
+        )
+        for status in ("complete", "error", "cancelled", "running", "queued"):
+            if status in output:
+                return status
+        if attempt < STATUS_PARSE_ATTEMPTS - 1:
+            print(
+                f"Kernel status not parseable yet for {kernel} "
+                f"(attempt {attempt + 1}/{STATUS_PARSE_ATTEMPTS}); "
+                f"retrying in {STATUS_PARSE_RETRY_SECONDS}s"
+            )
+            time.sleep(STATUS_PARSE_RETRY_SECONDS)
     raise RuntimeError(
-        f"could not parse kernel status for {kernel}: {result.stdout.strip()}"
+        f"could not parse kernel status for {kernel}: {last_output}"
     )
 
 

@@ -39,17 +39,35 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 KERNEL_ID = "monibeefudgekins/akarui-sft-training"
-KERNEL_TITLE = "Akarui SFT training (QLoRA, Qwen3.8-27B)"
+# Title MUST slugify to the kernel id (see _slugify below): Kaggle's
+# SaveKernel creates the kernel under the TITLE-derived slug when they
+# differ, so the push "succeeds" but lands at the wrong URL as an
+# unrun draft and the status poll of the intended slug finds nothing
+# (seen live 2026-11-18 on the eval kernel, run #5). The previous
+# title ("Akarui SFT training (QLoRA, Qwen3.8-27B)") slugified to
+# "akarui-sft-training-qlora-qwen3-8-27b", not "akarui-sft-training".
+KERNEL_TITLE = "Akarui SFT Training"
 #: Kaggle kernel titles are capped at 50 characters (SaveKernel API
 #: rejects longer titles with HTTP 400). Guarded in build_kernel so a
 #: too-long title fails at packaging time, not at push time.
 MAX_TITLE_LENGTH = 50
+
+
+def _slugify(text: str) -> str:
+    """Slugify an ASCII title the way Kaggle's CLI does (python-slugify).
+
+    Lowercase, collapse every run of non-alphanumeric characters to a
+    single hyphen, strip leading/trailing hyphens. Titles here are
+    ASCII-only, so no transliteration is needed.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 NOTEBOOK_FILE = "05_sft_training.ipynb"
 NOTEBOOK_SRC = Path("notebooks") / NOTEBOOK_FILE
 
@@ -247,6 +265,15 @@ def build_kernel(repo_root: Path, out_dir: Path) -> dict:
         raise ValueError(
             f"refusing to package: kernel title is {len(KERNEL_TITLE)} chars, "
             f"over Kaggle's {MAX_TITLE_LENGTH}-char limit: {KERNEL_TITLE!r}"
+        )
+    slug = KERNEL_ID.split("/", 1)[1]
+    if _slugify(KERNEL_TITLE) != slug:
+        raise ValueError(
+            f"refusing to package: kernel title {KERNEL_TITLE!r} slugifies "
+            f"to {_slugify(KERNEL_TITLE)!r}, not the kernel id {KERNEL_ID!r}; "
+            "Kaggle would create the kernel under the title-derived slug, "
+            "so the push would land at the wrong URL and the status poll "
+            "would fail"
         )
     metadata = {
         "id": KERNEL_ID,
