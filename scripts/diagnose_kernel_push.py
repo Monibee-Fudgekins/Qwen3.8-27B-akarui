@@ -82,6 +82,14 @@ def main(argv: list[str] | None = None) -> int:
             _print_response_body(cause)
         return 1
 
+    # The API can refuse the push in the response body (200 with an
+    # error field) without raising -- that is a failed push, not a
+    # success (seen live 2026-11-18: quota refusal arrived this way).
+    api_error = getattr(result, "error", None)
+    if api_error:
+        print(f"push FAILED (API error in response): {api_error}")
+        return 1
+
     print("push SUCCEEDED on the re-attempt (earlier failure was transient):")
     print(f"  error: {getattr(result, 'error', None)}")
     print(f"  url: {getattr(result, 'url', None)}")

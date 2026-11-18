@@ -244,6 +244,120 @@ def test_trigger_complete_still_exits_zero(tmp_path: Path, monkeypatch):
     assert json.loads(record_path.read_text())["status"] == "complete"
 
 
+def test_trigger_push_quota_in_success_output_is_skip(tmp_path: Path, monkeypatch):
+    """The CLI exits 0 even when the API refuses the push in the
+    response body (200 with an error field) -- e.g. quota. That is a
+    skip, not a submitted kernel (seen live 2026-11-18, run #6)."""
+    monkeypatch.setattr(
+        trigger_kaggle, "configure_kaggle_auth",
+        lambda: {"method": "test"},
+    )
+    monkeypatch.setattr(trigger_kaggle.shutil, "which", lambda _: "/usr/bin/kaggle")
+    monkeypatch.setattr(
+        trigger_kaggle, "_run_cli",
+        lambda args: subprocess.CompletedProcess(
+            args, returncode=0, stdout="",
+            stderr="Kernel push error: Maximum weekly GPU quota of 30.00 hours reached.",
+        ),
+    )
+    notebook_dir = _fake_notebook_dir(tmp_path)
+    record_path = tmp_path / "run.json"
+    rc = trigger_kaggle.main([
+        "--notebook-dir", str(notebook_dir),
+        "--no-package",
+        "--run-record", str(record_path),
+    ])
+    assert rc == 0
+    record = json.loads(record_path.read_text())
+    assert record["status"] == "skipped_quota"
+    assert "quota" in record["reason"].lower()
+
+
+def test_trigger_kernel_error_on_quota_is_skip(tmp_path: Path, monkeypatch):
+    """A kernel that errors immediately because the weekly GPU quota
+    is exhausted never really started -- skip, don't fail (run #6)."""
+    monkeypatch.setattr(
+        trigger_kaggle, "configure_kaggle_auth",
+        lambda: {"method": "test"},
+    )
+    monkeypatch.setattr(trigger_kaggle.shutil, "which", lambda _: "/usr/bin/kaggle")
+
+    def _fake_cli(args):
+        if args[:2] == ["kernels", "push"]:
+            return subprocess.CompletedProcess(
+                args, returncode=0, stdout="Kernel submitted", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            args, returncode=0,
+            stdout=(
+                'monibeefudgekins/akarui-eval-baseline has status "error"\n'
+                'Failure message: "Maximum weekly GPU quota of 30.00 hours reached."'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(trigger_kaggle, "_run_cli", _fake_cli)
+    monkeypatch.setattr(trigger_kaggle.time, "sleep", lambda _: None)
+    notebook_dir = _fake_notebook_dir(tmp_path)
+    record_path = tmp_path / "run.json"
+    rc = trigger_kaggle.main([
+        "--notebook-dir", str(notebook_dir),
+        "--no-package",
+        "--run-record", str(record_path),
+    ])
+    assert rc == 0
+    record = json.loads(record_path.read_text())
+    assert record["status"] == "skipped_quota"
+    assert "quota" in record["reason"].lower()
+
+
+def test_diagnose_reports_api_error_field_as_failure(tmp_path: Path, monkeypatch):
+    """The diagnostic must not call a push 'SUCCEEDED' when the API
+    refused it in the response body (200 with an error field)."""
+    import diagnose_kernel_push
+
+    notebook_dir = tmp_path / "eval"
+    notebook_dir.mkdir()
+    (notebook_dir / "07_evaluation.ipynb").write_text("{}")
+    (notebook_dir / "kernel-metadata.json").write_text(json.dumps({
+        "id": "monibeefudgekins/akarui-eval-baseline",
+        "title": "Akarui Eval Baseline",
+        "kernel_type": "notebook",
+        "code_file": "07_evaluation.ipynb",
+    }))
+
+    class _FakeApi:
+        def authenticate(self):
+            return None
+
+        def kernels_push(self, folder):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                error="Maximum weekly GPU quota of 30.00 hours reached.",
+                url="", versionNumber=0,
+            )
+
+    monkeypatch.setattr(
+        diagnose_kernel_push, "configure_kaggle_auth",
+        lambda: {"method": "test"},
+    )
+    # The test venv has no `kaggle` package; stub the module the
+    # diagnostic imports KaggleApi from at call time.
+    import sys
+    import types
+
+    fake_api_module = types.ModuleType("kaggle.api.kaggle_api_extended")
+    fake_api_module.KaggleApi = _FakeApi
+    monkeypatch.setitem(sys.modules, "kaggle", types.ModuleType("kaggle"))
+    monkeypatch.setitem(sys.modules, "kaggle.api", types.ModuleType("kaggle.api"))
+    monkeypatch.setitem(
+        sys.modules, "kaggle.api.kaggle_api_extended", fake_api_module
+    )
+    rc = diagnose_kernel_push.main(["--notebook-dir", str(notebook_dir)])
+    assert rc == 1
+
+
 # --- 11h runtime guard ---------------------------------------------------
 
 

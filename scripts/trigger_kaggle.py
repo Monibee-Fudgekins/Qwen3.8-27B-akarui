@@ -111,6 +111,14 @@ def push_kernel(notebook_dir: Path) -> None:
                 f"{output}"
             )
         raise RuntimeError(f"kaggle kernels push failed: {output}")
+    # The CLI exits 0 even when the API refuses the push in the
+    # response body (200 with an error field) -- e.g. quota. A refused
+    # push is a quota skip, not a submitted kernel.
+    if is_quota_failure(result.stdout + result.stderr):
+        raise QuotaExceededError(
+            "kaggle kernels push refused: weekly GPU quota exhausted: "
+            f"{(result.stdout + result.stderr).strip()}"
+        )
     print(f"Kernel submitted from {notebook_dir}")
 
 
@@ -172,13 +180,41 @@ def kernel_status(kernel: str) -> str:
     )
 
 
+def kernel_failure_message(kernel: str) -> str:
+    """Return the kernel's failure message from `kaggle kernels status`.
+
+    The CLI prints `Failure message: "..."` when a kernel errored.
+    Returns "" when there is no failure message (or the call itself
+    cannot be parsed).
+    """
+    result = _run_cli(["kernels", "status", kernel])
+    for line in (result.stdout + result.stderr).splitlines():
+        if "Failure message:" in line:
+            return line.split("Failure message:", 1)[1].strip().strip('"')
+    return ""
+
+
 def wait_for_completion(kernel: str, timeout_minutes: int) -> str:
-    """Poll until the kernel finishes. Returns the final status string."""
+    """Poll until the kernel finishes. Returns the final status string.
+
+    A kernel that errors because the weekly GPU quota is exhausted
+    raises QuotaExceededError (a skip, not a failure): the run never
+    really started, so it waits for the quota to reset.
+    """
     deadline = time.monotonic() + timeout_minutes * 60
     while True:
         status = kernel_status(kernel)
         print(f"Kernel {kernel}: {status}")
         if status in ("complete", "error", "cancelled"):
+            if status == "error":
+                message = kernel_failure_message(kernel)
+                if message:
+                    print(f"Kernel failure message: {message}")
+                if is_quota_failure(message):
+                    raise QuotaExceededError(
+                        "kernel errored: weekly GPU quota exhausted: "
+                        f"{message}"
+                    )
             return status
         if time.monotonic() >= deadline:
             return "timeout"
