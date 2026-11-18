@@ -7,6 +7,21 @@ variation version.
 
 ## [Unreleased]
 
+- Publish-path hardening (first live publish is Wed 2026-11-25 08:00 UTC):
+  the version-create handle now uses the BARE variation
+  (``monibeefudgekins/qwen3-8-27b-akarui/pytorch/qlora-sft``), never
+  the release label (``qlora-sft-v1``) — Kaggle treats the 4th handle
+  component as the instance slug, so the label would have created a
+  new instance per release. The kagglehub fallback now passes the
+  4-part handle kagglehub 0.3.12 `parse_model_handle` requires (the
+  2-part `owner/model` form raises ValueError). The CLI path ensures
+  the instance exists before creating a version (`kaggle models
+  instances get`, then `kaggle models instances create -p <dir>`
+  from a `model-instance-metadata.json` only when missing), so the
+  first publish of a variation works; after `kaggle models create`
+  (new model shell only) the same ensure + version create follows.
+  kagglehub needs no separate instance step — its `model_upload`
+  creates a missing model and instance itself.
 - Kernel packaging: `scripts/package_kernel.py` assembles a
   self-contained Kaggle kernel directory (`kernels/sft/`: notebook 05
   + `src/` + `scripts/` + `configs/` + `data/train.jsonl` +

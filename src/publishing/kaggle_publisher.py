@@ -90,6 +90,128 @@ DEFAULT_TAGS = [
 # to appear. ``merged-bf16`` is only published when the hardware and
 # storage budget support a merged model.
 VARIATIONS = ("qlora-sft", "qlora-dpo", "qlora-grpo", "merged-bf16")
+# File the Kaggle CLI reads for ``kaggle models instances create``
+# (kaggle 1.7.4 ``KaggleApi.MODEL_INSTANCE_METADATA_FILE``).
+MODEL_INSTANCE_METADATA_FILE = "model-instance-metadata.json"
+
+
+def bare_variation(version_label: str) -> str:
+    """Return the bare variation (instance slug) for a version label.
+
+    Kaggle treats the 4th component of a model-instance handle as
+    the INSTANCE slug, so a release label like ``qlora-sft-v1`` must
+    never appear there: it would create a new instance per release
+    instead of accumulating versions under one instance. The
+    instances are the bare variations (``qlora-sft``); the labels
+    (``qlora-sft-v1``) are versions of those instances.
+    """
+    for variation in VARIATIONS:
+        if version_label == variation or version_label.startswith(variation + "-"):
+            return variation
+    raise ValueError(
+        f"unknown variation in {version_label!r}; expected one of {VARIATIONS}"
+    )
+
+
+def build_model_instance_metadata(
+    variation: str,
+    overview: str = "",
+    usage: str = "",
+    *,
+    owner: str = KAGGLE_OWNER,
+    model_slug: str = MODEL_SLUG,
+) -> dict:
+    """Build the metadata file for ``kaggle models instances create``.
+
+    The CLI's ``model_instance_create`` (kaggle 1.7.4
+    ``kaggle_api_extended.py``) reads exactly these keys from
+    ``model-instance-metadata.json``: ``ownerSlug``, ``modelSlug``,
+    ``instanceSlug``, ``framework``, ``overview``, ``usage``,
+    ``licenseName`` (required, non-empty), ``fineTunable``,
+    ``trainingData``, ``modelInstanceType``, ``baseModelInstance``
+    and ``externalBaseModelUrl``. The instance slug is the BARE
+    variation (see :func:`bare_variation`).
+    """
+    bare = bare_variation(variation)
+    return {
+        "ownerSlug": owner,
+        "modelSlug": model_slug,
+        "instanceSlug": bare,
+        "framework": FRAMEWORK,
+        "overview": overview,
+        "usage": usage,
+        "licenseName": LICENSE_NAME_DOCS,
+        "fineTunable": True,
+        "trainingData": [],
+        "modelInstanceType": "Unspecified",
+        "baseModelInstance": "",
+        "externalBaseModelUrl": "",
+    }
+
+
+def ensure_instance_exists(
+    instance_handle: str,
+    variation: str,
+    env: dict[str, str] | None = None,
+    *,
+    overview: str = "",
+    usage: str = "",
+) -> dict:
+    """Ensure the Kaggle model instance exists; create it if missing.
+
+    Proactive check, not create-then-retry: ``kaggle models
+    instances get <owner>/<model>/<framework>/<variation>``
+    (kaggle 1.7.4 ``KaggleApi.model_instance_get``) reports whether
+    the instance exists. When it does, nothing is created — the
+    call is idempotent and a repeat publish never issues a spurious
+    create. When it does not, the instance is created with
+    ``kaggle models instances create -p <tmpdir>`` from a
+    ``model-instance-metadata.json`` built by
+    :func:`build_model_instance_metadata` (the create command takes
+    no handle argument; it reads the instance slug from that file).
+    The temporary directory holds only the metadata file — the
+    CLI's ``upload_files`` skips metadata files, so the create
+    uploads no model files; the files land with the version create
+    that follows.
+
+    Raises RuntimeError when creation fails, FileNotFoundError
+    when the ``kaggle`` binary is absent (callers treat that as
+    "CLI unavailable" and fall back to kagglehub, whose
+    ``model_upload`` creates a missing instance itself — see
+    :func:`_upload_via_kagglehub`). Returns ``{"instance": ...,
+    "created": bool}``.
+    """
+    get_result = subprocess.run(
+        ["kaggle", "models", "instances", "get", instance_handle],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if get_result.returncode == 0:
+        return {"instance": instance_handle, "created": False}
+    owner, model_slug, _framework, _bare = instance_handle.split("/", 3)
+    metadata = build_model_instance_metadata(
+        variation, overview, usage, owner=owner, model_slug=model_slug
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / MODEL_INSTANCE_METADATA_FILE).write_text(
+            json.dumps(metadata, indent=2), encoding="utf-8"
+        )
+        created = subprocess.run(
+            ["kaggle", "models", "instances", "create", "-p", tmpdir],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    if created.returncode != 0:
+        raise RuntimeError(
+            "could not create model instance "
+            f"{instance_handle} (exit {created.returncode}): "
+            f"{created.stderr.strip() or created.stdout.strip()}"
+        )
+    return {"instance": instance_handle, "created": True}
 
 
 def configure_kaggle_auth() -> dict[str, str]:
@@ -375,13 +497,27 @@ def upload_variation(
 ) -> dict:
     """Upload a new version of ``variation`` to Kaggle.
 
+    ``variation`` is a bare variation (``qlora-sft``) or a release
+    version label (``qlora-sft-v1``); the instance handle always
+    uses the BARE variation — Kaggle treats the 4th handle
+    component as the instance slug, so the version label must never
+    appear there or every release would create a new instance
+    instead of a new version of the same instance (see
+    :func:`bare_variation`).
+
     Primary path: the Kaggle CLI
     (``kaggle models instances versions create
     <owner>/<model>/<framework>/<variation>`` — kaggle 1.7.4
     ``kaggle/cli.py`` ``parse_model_instance_versions``; there is no
-    ``kaggle models version create`` subcommand). Fallback path: kagglehub's
-    model upload, used only if the CLI is not installed. Both paths
-    refuse to run when ``provenance`` is incomplete.
+    ``kaggle models version create`` subcommand). Before the
+    version create, :func:`ensure_instance_exists` creates the
+    instance when it is missing, so the first publish of a
+    variation works. Fallback path: kagglehub's model upload, used
+    only if the CLI is not installed; kagglehub creates a missing
+    model and instance itself (kagglehub 0.3.12
+    ``models_helpers.py`` ``create_model_if_missing`` /
+    ``create_model_instance_or_version``). Both paths refuse to run
+    when ``provenance`` is incomplete.
 
     Whichever path uploads, the model is then verified public:
     kagglehub creates a missing model private and the CLI path
@@ -412,7 +548,7 @@ def upload_variation(
     if cli_result is not None:
         cli_result["visibility"] = ensure_model_public(handle)
         return cli_result
-    hub_result = _upload_via_kagglehub(handle, variation, model_dir)
+    hub_result = _upload_via_kagglehub(handle, variation, model_dir, version_notes=version_notes)
     hub_result["visibility"] = ensure_model_public(handle)
     return hub_result
 
@@ -432,11 +568,36 @@ def _upload_via_cli(
     [-n <notes>]`` (kaggle 1.7.4 ``kaggle/cli.py``
     ``parse_model_instance_versions``; the instance handle is
     ``[owner]/[model-name]/[framework]/[instance-slug]`` per
-    ``KaggleApi.model_instance_version_create``). There is no
+    ``KaggleApi.model_instance_version_create``). The instance slug
+    is the BARE variation (``qlora-sft``), never a release label
+    (``qlora-sft-v1``) — see :func:`bare_variation`. There is no
     ``kaggle models version create`` subcommand — ``models`` only
     offers get/list/init/create/delete/update.
+
+    ``kaggle models instances versions create`` requires the
+    instance to already exist, so :func:`ensure_instance_exists`
+    creates it first when missing. A ``FileNotFoundError`` from
+    either subprocess call means the CLI is absent and the caller
+    falls back to kagglehub.
     """
-    instance_handle = f"{handle}/{FRAMEWORK}/{variation}"
+    bare = bare_variation(variation)
+    instance_handle = f"{handle}/{FRAMEWORK}/{bare}"
+    overview = ""
+    usage = ""
+    variation_meta = model_dir / "model-variation-metadata.json"
+    if variation_meta.exists():
+        try:
+            variation_data = json.loads(variation_meta.read_text())
+            overview = str(variation_data.get("overview") or "")
+            usage = str(variation_data.get("usage") or "")
+        except (ValueError, OSError):
+            pass
+    try:
+        instance = ensure_instance_exists(
+            instance_handle, bare, env, overview=overview, usage=usage
+        )
+    except FileNotFoundError:
+        return None
     command = [
         "kaggle",
         "models",
@@ -468,14 +629,36 @@ def _upload_via_cli(
     return {
         "method": "kaggle-cli",
         "model": handle,
-        "variation": variation,
+        "variation": bare,
+        "instance_created": instance["created"],
         "directory": str(model_dir),
         "cli_output": completed.stdout.strip()[:2000],
     }
 
 
-def _upload_via_kagglehub(handle: str, variation: str, model_dir: Path) -> dict:
-    """Fallback upload with kagglehub; raises if kagglehub is absent."""
+def _upload_via_kagglehub(
+    handle: str,
+    variation: str,
+    model_dir: Path,
+    *,
+    version_notes: str | None = None,
+) -> dict:
+    """Fallback upload with kagglehub; raises if kagglehub is absent.
+
+    kagglehub 0.3.12 ``models.model_upload`` parses the handle with
+    ``handle.parse_model_handle``, which requires 4 parts
+    (``owner/model/framework/variation``) or 5 versioned parts and
+    raises ``ValueError`` otherwise — so the handle here is the
+    4-part form with the BARE variation (``qlora-sft``), never the
+    2-part ``owner/model`` form and never a release label. The
+    upload creates a missing model (private — repaired afterwards
+    by :func:`ensure_model_public`) and a missing instance itself
+    (``models_helpers.create_model_instance_or_version`` tries an
+    instance create and falls back to a version create on HTTP
+    409 Conflict), so the first publish works through this path
+    with no separate instance-create step.
+    """
+    bare = bare_variation(variation)
     try:
         import kagglehub
     except ImportError as exc:  # pragma: no cover - environment dependent
@@ -489,10 +672,11 @@ def _upload_via_kagglehub(handle: str, variation: str, model_dir: Path) -> dict:
             "installed kagglehub has no model_upload API; "
             "use the kaggle CLI to publish this variation"
         )
-    upload(handle, str(model_dir))
+    full_handle = f"{handle}/{FRAMEWORK}/{bare}"
+    upload(full_handle, str(model_dir), version_notes=version_notes or "")
     return {
         "method": "kagglehub",
         "model": handle,
-        "variation": variation,
+        "variation": bare,
         "directory": str(model_dir),
     }

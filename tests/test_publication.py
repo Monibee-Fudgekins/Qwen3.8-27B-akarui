@@ -310,8 +310,17 @@ def test_model_card_marks_unmeasured():
 # (``parse_model_instance_versions``; the handle is
 # ``[owner]/[model-name]/[framework]/[instance-slug]`` per
 # ``KaggleApi.model_instance_version_create``).
+#
+# The instance slug is the BARE variation (``qlora-sft``), never a
+# release label (``qlora-sft-v1``): Kaggle treats the 4th handle
+# component as the instance slug, so a label there would create a
+# new instance per release instead of a new version of one
+# instance. Before the version create, the instance is ensured to
+# exist (``kaggle models instances get``; ``kaggle models instances
+# create -p <dir>`` when missing), so the first publish works.
 
-INSTANCE_HANDLE = f"{KAGGLE_OWNER}/{MODEL_SLUG}/pytorch/qlora-sft-v1"
+INSTANCE_HANDLE = f"{KAGGLE_OWNER}/{MODEL_SLUG}/pytorch/qlora-sft"
+VERSION_LABEL = "qlora-sft-v1"
 
 
 def _fake_run_ok(monkeypatch, commands: list):
@@ -320,6 +329,87 @@ def _fake_run_ok(monkeypatch, commands: list):
         return SimpleNamespace(returncode=0, stdout="created", stderr="")
 
     monkeypatch.setattr("subprocess.run", fake_run)
+
+
+def _fake_run_instance_missing(monkeypatch, commands: list, created_metadata: dict):
+    """Fake where `instances get` reports the instance missing.
+
+    The `instances create` call snapshots the metadata file it was
+    pointed at (the temp dir is deleted when the call returns).
+    """
+
+    def fake_run(argv, **kwargs):
+        commands.append(list(argv))
+        if argv[1:4] == ["models", "instances", "get"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="not found")
+        if argv[1:4] == ["models", "instances", "create"]:
+            folder = argv[argv.index("-p") + 1]
+            created_metadata.update(
+                json.loads(
+                    (Path(folder) / "model-instance-metadata.json").read_text()
+                )
+            )
+            return SimpleNamespace(returncode=0, stdout="created", stderr="")
+        return SimpleNamespace(returncode=0, stdout="created", stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+
+def test_bare_variation_strips_release_label():
+    assert kaggle_publisher.bare_variation("qlora-sft-v1") == "qlora-sft"
+    assert kaggle_publisher.bare_variation("qlora-sft") == "qlora-sft"
+    assert kaggle_publisher.bare_variation("merged-bf16-v3") == "merged-bf16"
+    with pytest.raises(ValueError, match="unknown variation"):
+        kaggle_publisher.bare_variation("not-a-variation-v1")
+
+
+def test_build_model_instance_metadata():
+    metadata = kaggle_publisher.build_model_instance_metadata(
+        "qlora-sft-v1", overview="o", usage="u"
+    )
+    assert metadata["instanceSlug"] == "qlora-sft"
+    assert metadata["ownerSlug"] == KAGGLE_OWNER
+    assert metadata["modelSlug"] == MODEL_SLUG
+    assert metadata["framework"] == "pytorch"
+    assert metadata["licenseName"] == "Apache 2.0"
+    assert metadata["fineTunable"] is True
+    assert metadata["overview"] == "o"
+    assert metadata["usage"] == "u"
+
+
+def test_ensure_instance_exists_noop_when_present(monkeypatch):
+    commands: list = []
+    _fake_run_ok(monkeypatch, commands)
+    result = kaggle_publisher.ensure_instance_exists(INSTANCE_HANDLE, "qlora-sft")
+    assert result == {"instance": INSTANCE_HANDLE, "created": False}
+    assert commands == [["kaggle", "models", "instances", "get", INSTANCE_HANDLE]]
+
+
+def test_ensure_instance_exists_creates_missing_instance(monkeypatch):
+    commands: list = []
+    created_metadata: dict = {}
+    _fake_run_instance_missing(monkeypatch, commands, created_metadata)
+    result = kaggle_publisher.ensure_instance_exists(
+        INSTANCE_HANDLE, "qlora-sft-v1", overview="o", usage="u"
+    )
+    assert result == {"instance": INSTANCE_HANDLE, "created": True}
+    assert commands[0] == ["kaggle", "models", "instances", "get", INSTANCE_HANDLE]
+    assert commands[1][:4] == ["kaggle", "models", "instances", "create"]
+    assert commands[1][4] == "-p"
+    assert created_metadata["instanceSlug"] == "qlora-sft"
+    assert created_metadata["framework"] == "pytorch"
+    assert created_metadata["licenseName"] == "Apache 2.0"
+
+
+def test_ensure_instance_exists_create_failure_raises(monkeypatch):
+    def failing_run(argv, **kwargs):
+        if argv[1:4] == ["models", "instances", "get"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="not found")
+        return SimpleNamespace(returncode=1, stdout="", stderr="create failed")
+
+    monkeypatch.setattr("subprocess.run", failing_run)
+    with pytest.raises(RuntimeError, match="could not create model instance"):
+        kaggle_publisher.ensure_instance_exists(INSTANCE_HANDLE, "qlora-sft")
 
 
 def test_upload_variation_uses_instances_versions_create(monkeypatch, tmp_path: Path):
@@ -340,7 +430,11 @@ def test_upload_variation_uses_instances_versions_create(monkeypatch, tmp_path: 
         version_notes="Release 1",
     )
     assert result["method"] == "kaggle-cli"
+    # The release label is a version, not an instance: the handle
+    # carries the BARE variation, and the instance is checked first.
+    assert result["variation"] == "qlora-sft"
     assert commands == [
+        ["kaggle", "models", "instances", "get", INSTANCE_HANDLE],
         [
             "kaggle",
             "models",
@@ -352,7 +446,7 @@ def test_upload_variation_uses_instances_versions_create(monkeypatch, tmp_path: 
             str(model_dir),
             "-n",
             "Release 1",
-        ]
+        ],
     ]
 
 
@@ -369,6 +463,7 @@ def test_upload_variation_omits_notes_flag_when_no_notes(monkeypatch, tmp_path: 
     _fake_run_ok(monkeypatch, commands)
     upload_variation("qlora-sft", model_dir, complete_provenance())
     assert commands == [
+        ["kaggle", "models", "instances", "get", f"{KAGGLE_OWNER}/{MODEL_SLUG}/pytorch/qlora-sft"],
         [
             "kaggle",
             "models",
@@ -378,8 +473,78 @@ def test_upload_variation_omits_notes_flag_when_no_notes(monkeypatch, tmp_path: 
             f"{KAGGLE_OWNER}/{MODEL_SLUG}/pytorch/qlora-sft",
             "-p",
             str(model_dir),
-        ]
+        ],
     ]
+
+
+def test_upload_variation_first_publish_creates_missing_instance(
+    monkeypatch, tmp_path: Path
+):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    monkeypatch.setenv("KAGGLE_TOKEN", "owner:key")
+    monkeypatch.setattr(
+        kaggle_publisher,
+        "ensure_model_public",
+        lambda handle: {"handle": handle, "visibility": "public", "repaired": False},
+    )
+    commands: list = []
+    created_metadata: dict = {}
+    _fake_run_instance_missing(monkeypatch, commands, created_metadata)
+    result = upload_variation(
+        "qlora-sft-v1", model_dir, complete_provenance(), version_notes="Release 1"
+    )
+    assert result["method"] == "kaggle-cli"
+    assert result["instance_created"] is True
+    assert created_metadata["instanceSlug"] == "qlora-sft"
+    assert commands[0] == ["kaggle", "models", "instances", "get", INSTANCE_HANDLE]
+    assert commands[1][:4] == ["kaggle", "models", "instances", "create"]
+    assert commands[2] == [
+        "kaggle",
+        "models",
+        "instances",
+        "versions",
+        "create",
+        INSTANCE_HANDLE,
+        "-p",
+        str(model_dir),
+        "-n",
+        "Release 1",
+    ]
+
+
+def test_upload_variation_existing_instance_no_spurious_create(
+    monkeypatch, tmp_path: Path
+):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    monkeypatch.setenv("KAGGLE_TOKEN", "owner:key")
+    monkeypatch.setattr(
+        kaggle_publisher,
+        "ensure_model_public",
+        lambda handle: {"handle": handle, "visibility": "public", "repaired": False},
+    )
+    commands: list = []
+    _fake_run_ok(monkeypatch, commands)
+    result = upload_variation("qlora-sft-v1", model_dir, complete_provenance())
+    assert result["instance_created"] is False
+    assert not [c for c in commands if c[1:4] == ["models", "instances", "create"]]
+
+
+def test_upload_via_cli_version_create_failure_raises(monkeypatch, tmp_path: Path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+
+    def failing_version_run(argv, **kwargs):
+        if argv[1:4] == ["models", "instances", "get"]:
+            return SimpleNamespace(returncode=0, stdout="exists", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="version failed")
+
+    monkeypatch.setattr("subprocess.run", failing_version_run)
+    with pytest.raises(RuntimeError, match="kaggle CLI upload failed"):
+        kaggle_publisher._upload_via_cli(
+            f"{KAGGLE_OWNER}/{MODEL_SLUG}", "qlora-sft-v1", model_dir, {}
+        )
 
 
 def test_upload_via_cli_failure_raises(monkeypatch, tmp_path: Path):
@@ -390,7 +555,9 @@ def test_upload_via_cli_failure_raises(monkeypatch, tmp_path: Path):
         return SimpleNamespace(returncode=1, stdout="", stderr="instance not found")
 
     monkeypatch.setattr("subprocess.run", failing_run)
-    with pytest.raises(RuntimeError, match="kaggle CLI upload failed"):
+    # The instance check fails, so the ensure step tries to create
+    # the instance and that fails too.
+    with pytest.raises(RuntimeError, match="could not create model instance"):
         kaggle_publisher._upload_via_cli(
             f"{KAGGLE_OWNER}/{MODEL_SLUG}", "qlora-sft-v1", model_dir, {}
         )
@@ -420,7 +587,7 @@ def test_upload_variation_falls_back_to_kagglehub(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         kaggle_publisher,
         "_upload_via_kagglehub",
-        lambda handle, variation, directory: {
+        lambda handle, variation, directory, **_kwargs: {
             "method": "kagglehub",
             "model": handle,
             "variation": variation,
@@ -437,6 +604,73 @@ def test_upload_variation_falls_back_to_kagglehub(monkeypatch, tmp_path: Path):
     assert result["visibility"]["visibility"] == "public"
 
 
+def test_upload_via_kagglehub_uses_four_part_handle(monkeypatch, tmp_path: Path):
+    # kagglehub 0.3.12 `parse_model_handle` requires 4 parts
+    # (owner/model/framework/variation) and raises ValueError on a
+    # 2-part handle — the old code passed `owner/model` and the
+    # fallback could never run.
+    import sys
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    calls: list = []
+
+    class _FakeKagglehub:
+        @staticmethod
+        def model_upload(handle, local_dir, version_notes=""):
+            calls.append((handle, local_dir, version_notes))
+
+    monkeypatch.setitem(sys.modules, "kagglehub", _FakeKagglehub())
+    result = kaggle_publisher._upload_via_kagglehub(
+        f"{KAGGLE_OWNER}/{MODEL_SLUG}", "qlora-sft-v1", model_dir,
+        version_notes="Release 1",
+    )
+    assert calls == [
+        (f"{KAGGLE_OWNER}/{MODEL_SLUG}/pytorch/qlora-sft", str(model_dir), "Release 1")
+    ]
+    assert result["method"] == "kagglehub"
+    assert result["variation"] == "qlora-sft"
+
+
+@pytest.mark.skipif(
+    not Path("/tmp/kaggle-src/kagglehub-0.3.12/kagglehub/handle.py").exists(),
+    reason="pinned kagglehub wheel source only present locally under /tmp/kaggle-src",
+)
+def test_upload_via_kagglehub_rejects_two_part_handle(monkeypatch, tmp_path: Path):
+    # Direct evidence for the pinned behaviour: the real
+    # kagglehub 0.3.12 parser rejects a 2-part handle. Loaded from
+    # the pinned wheel source by file path so the test never touches
+    # sys.path or an installed kagglehub.
+    import importlib.util
+    import sys
+    import types
+
+    # handle.py does `from kagglehub.config import
+    # get_kaggle_api_endpoint`; stub just that import so the pinned
+    # parser loads standalone.
+    pkg = types.ModuleType("kagglehub")
+    pkg.__path__ = []
+    config = types.ModuleType("kagglehub.config")
+    config.get_kaggle_api_endpoint = lambda: ""
+    monkeypatch.setitem(sys.modules, "kagglehub", pkg)
+    monkeypatch.setitem(sys.modules, "kagglehub.config", config)
+    spec = importlib.util.spec_from_file_location(
+        "pinned_kagglehub_handle",
+        "/tmp/kaggle-src/kagglehub-0.3.12/kagglehub/handle.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with pytest.raises(ValueError, match="Invalid model handle"):
+        module.parse_model_handle(f"{KAGGLE_OWNER}/{MODEL_SLUG}")
+    parsed = module.parse_model_handle(
+        f"{KAGGLE_OWNER}/{MODEL_SLUG}/pytorch/qlora-sft"
+    )
+    assert (parsed.owner, parsed.model, parsed.framework, parsed.variation) == (
+        KAGGLE_OWNER, MODEL_SLUG, "pytorch", "qlora-sft",
+    )
+
+
 def test_publish_script_version_create_path(monkeypatch, tmp_path: Path):
     import publish_kaggle
 
@@ -448,6 +682,7 @@ def test_publish_script_version_create_path(monkeypatch, tmp_path: Path):
     _fake_run_ok(monkeypatch, commands)
     publish_kaggle.upload_with_cli(staging, "1", "qlora-sft-v1")
     assert commands == [
+        ["kaggle", "models", "instances", "get", INSTANCE_HANDLE],
         [
             "kaggle",
             "models",
@@ -459,7 +694,7 @@ def test_publish_script_version_create_path(monkeypatch, tmp_path: Path):
             str(staging),
             "-n",
             "Release 1",
-        ]
+        ],
     ]
 
 
@@ -473,7 +708,78 @@ def test_publish_script_create_new_model_path(monkeypatch, tmp_path: Path):
     commands: list = []
     _fake_run_ok(monkeypatch, commands)
     publish_kaggle.upload_with_cli(staging, "1", "qlora-sft-v1")
-    assert commands == [["kaggle", "models", "create", "-p", str(staging)]]
+    # `kaggle models create` makes only the model shell — no
+    # instance, no files — so the first publish continues with the
+    # instance ensure and the first version create.
+    assert commands == [
+        ["kaggle", "models", "create", "-p", str(staging)],
+        ["kaggle", "models", "instances", "get", INSTANCE_HANDLE],
+        [
+            "kaggle",
+            "models",
+            "instances",
+            "versions",
+            "create",
+            INSTANCE_HANDLE,
+            "-p",
+            str(staging),
+            "-n",
+            "Release 1",
+        ],
+    ]
+
+
+def test_publish_script_first_publish_creates_missing_instance(
+    monkeypatch, tmp_path: Path
+):
+    import publish_kaggle
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/kaggle")
+    monkeypatch.setattr(publish_kaggle, "_model_exists", lambda: True)
+    commands: list = []
+    created_metadata: dict = {}
+    _fake_run_instance_missing(monkeypatch, commands, created_metadata)
+    publish_kaggle.upload_with_cli(staging, "1", "qlora-sft-v1")
+    assert commands[0] == ["kaggle", "models", "instances", "get", INSTANCE_HANDLE]
+    assert commands[1][:4] == ["kaggle", "models", "instances", "create"]
+    assert created_metadata["instanceSlug"] == "qlora-sft"
+    assert commands[2] == [
+        "kaggle",
+        "models",
+        "instances",
+        "versions",
+        "create",
+        INSTANCE_HANDLE,
+        "-p",
+        str(staging),
+        "-n",
+        "Release 1",
+    ]
+
+
+def test_publish_script_kagglehub_upload_uses_four_part_handle(
+    monkeypatch, tmp_path: Path
+):
+    import sys
+
+    import publish_kaggle
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    calls: list = []
+
+    class _FakeKagglehub:
+        @staticmethod
+        def model_upload(handle, local_dir, version_notes=""):
+            calls.append((handle, local_dir, version_notes))
+
+    monkeypatch.setitem(sys.modules, "kagglehub", _FakeKagglehub())
+    publish_kaggle.upload_with_kagglehub(staging, "1", "qlora-sft-v1")
+    assert calls == [
+        (f"{KAGGLE_OWNER}/{MODEL_SLUG}/pytorch/qlora-sft", str(staging), "Release 1")
+    ]
 
 
 def test_publish_script_cli_failure_raises(monkeypatch, tmp_path: Path):
@@ -485,6 +791,8 @@ def test_publish_script_cli_failure_raises(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(publish_kaggle, "_model_exists", lambda: True)
 
     def failing_run(argv, **kwargs):
+        if argv[1:4] == ["models", "instances", "get"]:
+            return SimpleNamespace(returncode=0, stdout="exists", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="upload failed")
 
     monkeypatch.setattr("subprocess.run", failing_run)

@@ -14,6 +14,10 @@ Flow:
    versions create <owner>/<model>/<framework>/<variation>`` for a new
    version — there is no ``kaggle models version create`` subcommand),
    falling back to kagglehub's ``model_upload`` when the CLI is unavailable.
+   The version command's variation is the BARE variation (``qlora-sft``),
+   never the release label (``qlora-sft-v1``), and the instance is created
+   first when it does not exist yet (``kaggle models instances get`` /
+   ``kaggle models instances create``), so the first publish works.
 4. Verify the published model is PUBLIC and repair it if it is not:
    the staged metadata carries ``"isPrivate": false`` (Kaggle
    defaults a new model to private), and after the upload the
@@ -54,6 +58,7 @@ from src.publishing.kaggle_publisher import (  # noqa: E402
     VARIATIONS,
     build_model_metadata as build_kaggle_model_metadata,
     build_variation_metadata as build_kaggle_variation_metadata,
+    ensure_instance_exists,
     ensure_model_public,
 )
 
@@ -179,36 +184,72 @@ def _model_exists() -> bool:
     return result.returncode == 0
 
 
+def _staged_variation_text(staging_dir: Path) -> tuple[str, str]:
+    """Read overview/usage from the staged variation metadata, if present."""
+    meta_file = staging_dir / "model-variation-metadata.json"
+    if not meta_file.exists():
+        return "", ""
+    try:
+        data = json.loads(meta_file.read_text())
+    except (ValueError, OSError):
+        return "", ""
+    return str(data.get("overview") or ""), str(data.get("usage") or "")
+
+
 def upload_with_cli(
     staging_dir: Path, release_version: str, model_version: str
 ) -> None:
     """Upload via the Kaggle CLI. Raises RuntimeError on failure.
 
-    New model: ``kaggle models create -p <dir>``. Existing model:
-    ``kaggle models instances versions create
-    <owner>/<model>/<framework>/<variation> -p <dir> -n <notes>``
-    (kaggle 1.7.4 ``kaggle/cli.py`` ``parse_model_instance_versions``;
-    there is no ``kaggle models version create`` subcommand).
-    ``model_version`` is the release variation label, e.g.
-    ``qlora-sft-v1``.
+    New model: ``kaggle models create -p <dir>`` (creates only the
+    model shell — no instance, no files), so the first publish
+    continues with an instance ensure and a version create below.
+    Existing model: straight to the instance ensure + version
+    create. The version command is ``kaggle models instances
+    versions create <owner>/<model>/<framework>/<variation> -p
+    <dir> -n <notes>`` (kaggle 1.7.4 ``kaggle/cli.py``
+    ``parse_model_instance_versions``; there is no ``kaggle models
+    version create`` subcommand). The 4th handle component is the
+    BARE variation (``qlora-sft``), derived from the release label
+    (``qlora-sft-v1``) — Kaggle treats it as the instance slug, so
+    the label must never appear there. ``model_version`` is the
+    release variation label, e.g. ``qlora-sft-v1``.
+
+    The version create requires the instance to exist, so
+    :func:`ensure_instance_exists` checks with ``kaggle models
+    instances get`` and creates the instance (``kaggle models
+    instances create -p <tmpdir>``) only when it is missing.
     """
     if shutil.which("kaggle") is None:
         raise RuntimeError("kaggle CLI not found on PATH")
-    if _model_exists():
-        command = [
-            "kaggle",
-            "models",
-            "instances",
-            "versions",
-            "create",
-            f"{KAGGLE_OWNER}/{MODEL_SLUG}/{FRAMEWORK}/{model_version}",
-            "-p",
-            str(staging_dir),
-            "-n",
-            f"Release {release_version}",
-        ]
-    else:
-        command = ["kaggle", "models", "create", "-p", str(staging_dir)]
+    variation = _variation_for_model_version(model_version)
+    instance_handle = f"{KAGGLE_OWNER}/{MODEL_SLUG}/{FRAMEWORK}/{variation}"
+    overview, usage = _staged_variation_text(staging_dir)
+    if not _model_exists():
+        result = subprocess.run(
+            ["kaggle", "models", "create", "-p", str(staging_dir)],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "kaggle upload failed: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+    ensure_instance_exists(instance_handle, variation, overview=overview, usage=usage)
+    command = [
+        "kaggle",
+        "models",
+        "instances",
+        "versions",
+        "create",
+        instance_handle,
+        "-p",
+        str(staging_dir),
+        "-n",
+        f"Release {release_version}",
+    ]
     result = subprocess.run(command, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         raise RuntimeError(
@@ -217,13 +258,27 @@ def upload_with_cli(
         )
 
 
-def upload_with_kagglehub(staging_dir: Path, release_version: str) -> None:
-    """Upload via kagglehub. Raises RuntimeError on failure."""
+def upload_with_kagglehub(
+    staging_dir: Path, release_version: str, model_version: str
+) -> None:
+    """Upload via kagglehub. Raises RuntimeError on failure.
+
+    kagglehub 0.3.12 ``model_upload`` parses the handle with
+    ``parse_model_handle``, which requires 4 parts
+    (``owner/model/framework/variation``) and raises ValueError
+    otherwise — so the handle is the 4-part form with the BARE
+    variation, never the 2-part ``owner/model`` form. kagglehub
+    creates a missing model and a missing instance itself
+    (``models_helpers.create_model_if_missing`` /
+    ``create_model_instance_or_version``), so this path needs no
+    separate instance-create step.
+    """
     try:
         import kagglehub  # noqa: PLC0415
     except ImportError as exc:
         raise RuntimeError(f"kagglehub is not installed: {exc}") from exc
-    handle = f"{KAGGLE_OWNER}/{MODEL_SLUG}"
+    variation = _variation_for_model_version(model_version)
+    handle = f"{KAGGLE_OWNER}/{MODEL_SLUG}/{FRAMEWORK}/{variation}"
     kagglehub.model_upload(
         handle, str(staging_dir), version_notes=f"Release {release_version}"
     )
@@ -318,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeError as cli_error:
         print(f"kaggle CLI upload failed ({cli_error}); trying kagglehub...")
         try:
-            upload_with_kagglehub(staging_dir, args.release_version)
+            upload_with_kagglehub(staging_dir, args.release_version, args.model_version)
         except RuntimeError as hub_error:
             print(f"error: kagglehub upload also failed: {hub_error}", file=sys.stderr)
             return 1
