@@ -1,0 +1,116 @@
+# Validate Repository — static checks on every push and pull request.
+#
+# Runs without any GPU or model weights:
+#   1. py_compile on every Python file.
+#   2. pytest on tests/ (tests are stdlib-only runnable).
+#   3. YAML syntax check on every .yaml/.yml file.
+#   4. JSON syntax check on every .json file.
+#   5. Credential scan: fail if any tracked file looks like it contains a
+#      committed credential (private key, kaggle.json, .env, hardcoded
+#      KAGGLE_TOKEN assignment, or a Kaggle API key value pattern).
+#
+# This workflow never prints secret values. The credential scan matches
+# patterns only and reports file names and line numbers, never content.
+
+name: Validate Repository
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install pyyaml pytest
+
+      - name: Compile all Python files
+        run: python -m compileall -q scripts src tests
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      - name: Validate YAML and JSON syntax
+        run: |
+          python - <<'PYEOF'
+          import json
+          import pathlib
+          import sys
+          import yaml
+
+          root = pathlib.Path(".")
+          failures = []
+          for path in sorted(root.rglob("*.yaml")) + sorted(root.rglob("*.yml")):
+              if ".git" in path.parts:
+                  continue
+              try:
+                  yaml.safe_load(path.read_text())
+              except yaml.YAMLError as exc:
+                  failures.append(f"{path}: {exc}")
+          for path in sorted(root.rglob("*.json")):
+              if ".git" in path.parts:
+                  continue
+              try:
+                  json.loads(path.read_text())
+              except json.JSONDecodeError as exc:
+                  failures.append(f"{path}: {exc}")
+          if failures:
+              print("\n".join(failures))
+              sys.exit(1)
+          print("YAML and JSON syntax OK")
+          PYEOF
+
+      - name: Scan for committed credentials
+        run: |
+          python - <<'PYEOF'
+          import pathlib
+          import re
+          import sys
+
+          # Patterns that indicate a credential committed to the repo.
+          # These match shapes, never real secret values; the report lists
+          # file and line number only, never the matched content.
+          patterns = {
+              "kaggle.json file": None,
+              "private key block": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+              "hardcoded KAGGLE_TOKEN": re.compile(r"KAGGLE_TOKEN\s*=\s*['\"][^'\"]+['\"]"),
+              "hardcoded kaggle key": re.compile(r"KAGGLE_KEY\s*=\s*['\"][^'\"]+['\"]"),
+              "kaggle api key value": re.compile(r'"key"\s*:\s*"[A-Za-z0-9]{20,}"'),
+              "env file": None,
+          }
+          hits = []
+          root = pathlib.Path(".")
+          for path in sorted(root.rglob("*")):
+              if not path.is_file() or ".git" in path.parts:
+                  continue
+              if path.name == "kaggle.json":
+                  hits.append(f"{path}: kaggle.json file must not be committed")
+              if path.suffix == ".env" or path.name == ".env":
+                  hits.append(f"{path}: .env file must not be committed")
+              if path.suffix not in {".py", ".yaml", ".yml", ".json", ".md", ".txt", ".toml", ".cfg", ".ini", ".sh"}:
+                  continue
+              try:
+                  lines = path.read_text(errors="strict").splitlines()
+              except (UnicodeDecodeError, OSError):
+                  continue
+              for lineno, line in enumerate(lines, 1):
+                  for label, pattern in patterns.items():
+                      if pattern is not None and pattern.search(line):
+                          hits.append(f"{path}:{lineno}: {label}")
+          if hits:
+              print("\n".join(hits))
+              sys.exit(1)
+          print("Credential scan OK")
+          PYEOF
