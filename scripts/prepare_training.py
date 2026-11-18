@@ -12,6 +12,11 @@ Rules:
   ``effective_batch = per_device_batch * grad_accum * num_gpus``.
 * The base-model revision must be pinned (a non-empty value that is not
   ``main`` / ``master`` / ``latest``). An unpinned revision is an error.
+* The 11h runtime guard is resolved and validated
+  (``src/training/runtime_guard.py``): ``runtime.max_runtime_hours``
+  must be in (0, 11] and the ``training.max_steps`` cap must fit the
+  hour budget at the worst-case step rate. An inconsistent config is
+  an error, raised before training starts.
 * With ``--allow-no-gpu`` the plan is written for validation purposes
   without detected hardware; the strategy is recorded as ``unresolved``
   and must be re-resolved on the training machine.
@@ -38,6 +43,16 @@ except ImportError:  # pragma: no cover - exercised only without PyYAML
 from detect_gpus import detect  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - exercised only without PyYAML
+    yaml = None  # type: ignore[assignment]
+
+from detect_gpus import detect  # noqa: E402
+from src.training.runtime_guard import resolve_runtime_guard  # noqa: E402
+
 TARGET_EFFECTIVE_BATCH_SIZE = 4
 REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$|^[0-9]+\.[0-9]+\.[0-9]+$")
 
@@ -161,6 +176,10 @@ def build_plan(config_path: Path, allow_no_gpu: bool = False) -> dict:
     """
     config = load_config(config_path)
     revision = validate_base_revision(config)
+    # Validates the 11h guard (hours in (0, 11], step cap fits the
+    # budget at the worst-case step rate); raises ValueError if the
+    # config is inconsistent, before any hardware is touched.
+    runtime_guard = resolve_runtime_guard(config)
     hardware = detect()
     plan_strategy = select_strategy(config, hardware)
 
@@ -185,6 +204,7 @@ def build_plan(config_path: Path, allow_no_gpu: bool = False) -> dict:
         "hardware": hardware,
         "strategy": plan_strategy,
         "training": config.get("training", {}),
+        "runtime_guard": runtime_guard,
         "quantization": config.get("quantization", {}),
         "lora": config.get("lora", {}),
         "dataset": config.get("dataset", {}),
@@ -226,7 +246,9 @@ def main(argv: list[str] | None = None) -> int:
         f"Plan written to {output_path}: "
         f"strategy={plan['strategy']['strategy']} "
         f"gpus={plan['strategy']['num_gpus']} "
-        f"effective_batch={plan['strategy']['effective_batch_size']}"
+        f"effective_batch={plan['strategy']['effective_batch_size']} "
+        f"max_runtime_hours={plan['runtime_guard']['max_runtime_hours']} "
+        f"max_steps={plan['runtime_guard']['max_steps']}"
     )
     return 0
 

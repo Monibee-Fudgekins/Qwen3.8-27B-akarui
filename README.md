@@ -189,6 +189,56 @@ training notebook via `scripts/trigger_kaggle.py` using the
 before evaluation and publication. GitHub-hosted runners never train
 the 27B model.
 
+### Kaggle kernel packaging
+
+The training notebook runs on Kaggle from a self-contained kernel
+directory built by `scripts/package_kernel.py`:
+
+```bash
+# Build kernels/sft/ (notebook + src/ + scripts/ + configs/ + data/train.jsonl)
+python scripts/package_kernel.py --out kernels/sft
+
+# Submit and poll (auto-packages when kernels/sft is missing)
+python scripts/trigger_kaggle.py --run-record output/kaggle-run.json
+```
+
+`package_kernel.py` **refuses** to package when
+`data/train.jsonl` is missing, empty, malformed, has no usable
+records, or names any of the 12 held-out benchmark competitions.
+The packaged directory is a build artifact (git-ignored); see
+`kernels/sft/README.md` for its layout and for how the kernel gets
+the base weights.
+
+**Base weights:** the kernel downloads the full
+`Qwen/Qwen3.8-27B` base from Hugging Face in-kernel at the pinned
+revision and quantizes it to 4-bit NF4 there (BitsAndBytes,
+`src/training/model_loader.py`); no pre-quantized weights are
+bundled. A pre-quantized HF variant
+(`RedHatAI/Qwen3.8-27B-MXFP4xFP8`) was checked and not adopted --
+it targets vLLM inference, not Transformers training. The kernel
+metadata therefore sets `enable_internet: true`.
+
+**Weekly GPU quota:** if `kaggle kernels push` is refused because
+the weekly GPU quota is exhausted, the trigger writes a run record
+with `status: "skipped_quota"` and exits 0 -- the run never started,
+so there is nothing to retry until the quota resets. Any other push
+failure exits 1. Only a kernel Kaggle itself reports `complete`
+counts as a successful run.
+
+**11h guard:** Kaggle hard-kills notebooks at 12h. SFT runs are
+bounded by `runtime.max_runtime_hours` (default 10h, in
+`configs/base.yaml`) and `training.max_steps` (600, in
+`configs/sft.yaml`); see `src/training/runtime_guard.py` for the
+arithmetic (600 steps x worst-case 50 s/step = 8.33h training +
+1h setup = 9.33h, 1.67h of margin under the 11h effective cap).
+When the wall clock runs out, training stops gracefully, a
+checkpoint is saved, `output/partial_complete.json` is written, and
+the run exits 0 with `status="partial_complete"` -- resume it with
+`--resume`. The 50 s/step planning rate is borrowed from the
+sibling Glimmer kernel's worst measured rate, not an Akarui
+measurement; the first real Akarui run must measure its own rate
+and the cap must be revised from it.
+
 ## Inference examples
 
 Loading an adapter release (adapter weights are **not** a standalone

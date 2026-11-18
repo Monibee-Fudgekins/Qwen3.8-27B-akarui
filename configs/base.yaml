@@ -53,6 +53,15 @@ training:
 hardware:
   min_gpu_memory_gb: 20
 
+# Wall-clock guard (see src/training/runtime_guard.py). Kaggle
+# hard-kills notebooks at 12h; the project plans against an 11h
+# effective cap and budgets 10h per run, 1h of which is setup.
+# The step cap in each stage config is sized from what is left:
+# (10h - 1h) at a worst-case 50 s/step allows 648 steps.
+runtime:
+  max_runtime_hours: 10.0
+  setup_allowance_hours: 1.0
+
 dataset:
   version: "v0"
   train_file: data/train.jsonl

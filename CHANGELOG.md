@@ -7,6 +7,24 @@ variation version.
 
 ## [Unreleased]
 
+- Kernel packaging: `scripts/package_kernel.py` assembles a
+  self-contained Kaggle kernel directory (`kernels/sft/`: notebook 05
+  + `src/` + `scripts/` + `configs/` + `data/train.jsonl` +
+  `kernel-metadata.json` for `monibeefudgekins/akarui-sft-training`);
+  it refuses to package when the training file is missing, empty,
+  malformed, unusable, or names a held-out benchmark competition.
+  Base weights are loaded from Hugging Face in-kernel at the pinned
+  revision and quantized to 4-bit NF4 there (no pre-quantized repo;
+  a vLLM-only MXFP4 variant was checked and not adopted).
+- Trigger: `scripts/trigger_kaggle.py` now defaults to the packaged
+  kernel dir, auto-packages when it is missing, and exits 0 with a
+  `skipped_quota` run record when the weekly GPU quota refuses the
+  push (other push failures still exit 1).
+- 11h guard: SFT runs are bounded by `runtime.max_runtime_hours`
+  (default 10h) and `training.max_steps` (600); on wall-clock
+  expiry training stops gracefully with a checkpoint and a
+  `partial_complete` record, exit 0. `prepare_training.py` resolves
+  and validates the guard into the training plan.
 - Nothing pending beyond the 0.1.0 infrastructure release.
 
 ## [0.1.0] — Initial infrastructure

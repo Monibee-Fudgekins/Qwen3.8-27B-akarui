@@ -139,15 +139,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.stage == "sft":
             from src.training.sft import run_sft  # noqa: PLC0415
 
-            run_sft(config, train_file, output_dir, resume_from=resume_from)
+            summary = run_sft(config, train_file, output_dir, resume_from=resume_from)
         elif args.stage == "dpo":
             from src.training.dpo import run_dpo  # noqa: PLC0415
 
-            run_dpo(config, train_file, output_dir, resume_from=resume_from)
+            summary = run_dpo(config, train_file, output_dir, resume_from=resume_from)
         else:
             from src.training.grpo import run_grpo  # noqa: PLC0415
 
-            run_grpo(config, train_file, output_dir, resume_from=resume_from)
+            summary = run_grpo(config, train_file, output_dir, resume_from=resume_from)
     except ImportError as exc:
         print(
             f"error: cannot import the {args.stage} trainer: {exc}. "
@@ -156,6 +156,14 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    # A partial-complete SFT run (wall-clock guard) still exits 0: the
+    # adapter + checkpoint were saved deliberately, not lost to a kill.
+    if isinstance(summary, dict) and summary.get("status"):
+        print(
+            f"Training finished with status={summary['status']} "
+            f"steps={summary.get('steps_completed')} "
+            f"elapsed_hours={summary.get('elapsed_hours')}"
+        )
     return 0
 
 

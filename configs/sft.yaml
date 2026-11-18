@@ -14,6 +14,14 @@ training:
   gradient_accumulation_steps: 4
   max_seq_length: 4096
   num_train_epochs: 1
+  # Step cap sized from the 10h wall-clock budget (see
+  # src/training/runtime_guard.py): 600 steps x worst-case 50 s/step
+  # = 8.33h training + 1h setup = 9.33h, 1.67h of margin under the
+  # 11h effective cap (2.67h under Kaggle's 12h kill). At 25 s/step
+  # the same cap takes 4.17h. The cap is an upper bound, not a
+  # target: a run whose epoch ends first finishes early, and the
+  # wall-clock guard stops a slow run gracefully instead of a kill.
+  max_steps: 600
   bf16: true
   gradient_checkpointing: true
   optim: adamw_bnb_8bit
