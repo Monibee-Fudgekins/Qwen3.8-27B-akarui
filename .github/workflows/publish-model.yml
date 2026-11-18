@@ -1,0 +1,82 @@
+# Publish Model — manual, gated publication to Kaggle Models.
+#
+# Publication requires BOTH:
+#   1. A manual approval: the dispatcher must set confirm_gates_passed to
+#      true, confirming the evaluation results were reviewed.
+#   2. An automated gate: scripts/verify_release.py must exit 0, proving
+#      the provenance manifest is complete and the candidate passes the
+#      promotion gates against the champion in configs/evaluation.yaml.
+#
+# If either check fails the workflow stops before any upload. Previous
+# stable versions are never overwritten or deleted.
+
+name: Publish Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Release version for this publication (e.g. 1)"
+        required: true
+      model_version:
+        description: "Model variation version label (e.g. qlora-sft-v1)"
+        required: true
+      provenance:
+        description: "Provenance manifest path"
+        required: false
+        default: "output/provenance.json"
+      evaluation_results:
+        description: "Evaluation results JSON path"
+        required: false
+        default: "evaluation/results.json"
+      champion_results:
+        description: "Champion results JSON path for gate comparison"
+        required: false
+        default: "evaluation/baseline_results.json"
+      confirm_gates_passed:
+        description: "Confirm you reviewed the evaluation results and the candidate passes the promotion gates (true/false)"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Require manual approval
+        if: ${{ inputs.confirm_gates_passed != true }}
+        run: |
+          echo "Publication refused: confirm_gates_passed was not set to true."
+          echo "Review the evaluation results, then re-dispatch with the approval set."
+          exit 1
+
+      - name: Verify release gates
+        run: |
+          python scripts/verify_release.py \
+            --provenance "${{ inputs.provenance }}" \
+            --evaluation "${{ inputs.evaluation_results }}" \
+            --champion "${{ inputs.champion_results }}" \
+            --config configs/evaluation.yaml
+
+      - name: Publish to Kaggle Models
+        run: |
+          python scripts/publish_kaggle.py \
+            --provenance "${{ inputs.provenance }}" \
+            --release-version "${{ inputs.release_version }}" \
+            --model-version "${{ inputs.model_version }}"
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
