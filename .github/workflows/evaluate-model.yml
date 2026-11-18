@@ -1,0 +1,51 @@
+# Evaluate Model — manual evaluation of a base model or adapter.
+#
+# Runs scripts/evaluate.py against the benchmark in
+# evaluation/benchmark_manifest.json and writes the results JSON. The
+# results artifact is what scripts/verify_release.py compares against the
+# champion when deciding promotion. Evaluation alone never publishes.
+
+name: Evaluate Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model to evaluate: 'base' or a path to a LoRA adapter directory"
+        required: true
+        default: "base"
+      config:
+        description: "Evaluation config file"
+        required: false
+        default: "configs/evaluation.yaml"
+      output:
+        description: "Results JSON path (artifact)"
+        required: false
+        default: "evaluation/results.json"
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run evaluation
+        run: python scripts/evaluate.py --config "${{ inputs.config }}" --model "${{ inputs.model }}" --output "${{ inputs.output }}"
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-results
+          path: ${{ inputs.output }}
