@@ -1,0 +1,37 @@
+# Qwen3.8-27B-akarui — Stage 2: Direct Preference Optimization.
+# Inherits configs/base.yaml; only stage-specific keys are overridden here.
+# Preference pairs must come from verified competition-solving execution
+# results. Never manufacture preference labels from another LLM's opinion
+# alone. DPO starts from the SFT adapter, not from the raw base model.
+
+base: base.yaml
+stage: dpo
+training_method: DPO
+
+dpo:
+  beta: 0.1
+  max_prompt_length: 2048
+  max_length: 4096
+  # Adapter produced by the SFT stage; resolved at runtime.
+  sft_adapter_path: output/akarui-sft-v0
+
+training:
+  learning_rate: 0.00005
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  max_seq_length: 4096
+  num_train_epochs: 1
+  bf16: true
+  gradient_checkpointing: true
+  optim: adamw_bnb_8bit
+  logging_steps: 10
+  save_steps: 100
+  seed: 42
+
+dataset:
+  version: "v0"
+  train_file: data/dpo.jsonl
+
+output_dir: output/akarui-dpo-v0

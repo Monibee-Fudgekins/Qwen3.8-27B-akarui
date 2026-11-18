@@ -1,0 +1,39 @@
+# Qwen3.8-27B-akarui — Stage 3: GRPO (experimental).
+# Inherits configs/base.yaml; only stage-specific keys are overridden here.
+#
+# GRPO is EXPERIMENTAL and DISABLED by default. Enable it only when
+# compute, evaluation infrastructure and reward reliability are sufficient.
+# The reward comes from executing generated solutions in an isolated
+# environment and measuring their results — never from an LLM judge alone.
+# scripts/train.py refuses to run GRPO while `enabled` is false unless
+# explicitly overridden with --force.
+
+base: base.yaml
+stage: grpo
+training_method: GRPO
+
+grpo:
+  enabled: false
+  num_generations: 4
+  reward_source: execution
+  max_prompt_length: 2048
+  max_completion_length: 2048
+  # Seconds allowed per generated solution execution.
+  execution_timeout_seconds: 600
+
+training:
+  learning_rate: 0.00001
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  max_seq_length: 4096
+  num_train_epochs: 1
+  bf16: true
+  gradient_checkpointing: true
+  optim: adamw_bnb_8bit
+  logging_steps: 10
+  save_steps: 100
+  seed: 42
+
+output_dir: output/akarui-grpo-v0

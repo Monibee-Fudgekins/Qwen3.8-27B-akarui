@@ -1,0 +1,26 @@
+# Qwen3.8-27B-akarui — pinned dependencies.
+#
+# Pins are reviewed deliberately, never auto-bumped. Compatible-release
+# pins (~=) allow patch updates within a tested minor line; bump a minor
+# version only after the training smoke test passes on Kaggle.
+#
+# The base model config was saved with transformers 5.8.0.dev0. The
+# runtime must verify the installed transformers supports model_type
+# qwen3_5 before loading Qwen/Qwen3.8-27B; if the pinned transformers
+# here does not, bump it to the first release that does and record the
+# change in CHANGELOG.md.
+
+torch~=2.7.0
+transformers~=4.57.0
+peft~=0.17.0
+trl~=0.23.0
+accelerate~=1.10.0
+bitsandbytes~=0.48.0
+datasets~=4.4.0
+safetensors~=0.6.0
+kagglehub~=0.3.0
+kaggle~=1.7.0
+pyyaml~=6.0.0
+pandas~=2.3.0
+scikit-learn~=1.7.0
+pytest~=8.4.0

@@ -1,0 +1,14 @@
+# The base model for this project is Qwen3.8-27B, developed by the Qwen team
+# (Qwen / Alibaba). See https://huggingface.co/Qwen/Qwen3.8-27B and
+# https://github.com/QwenLM/Qwen3.8. This citation file covers the Akarui
+# fine-tuning project only; please also cite the original Qwen3.8 model.
+cff-version: 1.2.0
+message: "If you use Qwen3.8-27B-akarui, please cite this project."
+title: "Qwen3.8-27B-akarui"
+type: software
+repository-code: "https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui"
+license: Apache-2.0
+authors:
+  - family-names: "Monibee-Fudgekins"
+    given-names: "Monibee-Fudgekins"
+    affiliation: "Qwen3.8-27B-akarui"

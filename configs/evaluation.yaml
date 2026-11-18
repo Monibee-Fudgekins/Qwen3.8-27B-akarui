@@ -1,0 +1,52 @@
+# Qwen3.8-27B-akarui — evaluation configuration.
+#
+# The benchmark is defined in evaluation/benchmark_manifest.json. The model
+# must never train on the held-out evaluation competitions listed there.
+# Promotion gates are evaluated by scripts/verify_release.py against the
+# current champion's results. A candidate that does not pass the gates is
+# never promoted to the public stable release.
+
+benchmark_manifest: evaluation/benchmark_manifest.json
+
+# Competition IDs held out for evaluation, taken from
+# evaluation/benchmark_manifest.json. Training MUST exclude every ID here.
+# verify_release.py refuses promotion while this list is empty.
+held_out_competition_ids:
+  - titanic
+  - house-prices-advanced-regression-techniques
+  - digit-recognizer
+  - spaceship-titanic
+  - playground-series-s3e11
+  - store-sales-time-series-forecasting
+  - nlp-getting-started
+  - petfinder-pawpularity-score
+  - tabular-playground-series-jan-2024
+  - forest-cover-type-prediction
+  - bike-sharing-demand
+  - commonlitreadabilityprize
+
+# Regression probes: base-model capabilities that must be retained.
+# Each probe is a small eval with a minimum acceptable score, measured
+# against the base model. Scores are task-specific (0-1) and recorded in
+# the evaluation results artifact.
+regression_probes:
+  - name: reasoning
+    description: Mathematical and logical reasoning retention
+    min_score: 0.0
+  - name: coding
+    description: General coding ability retention
+    min_score: 0.0
+  - name: instruction_following
+    description: Instruction-following retention
+    min_score: 0.0
+
+# Promotion gates. A candidate is promoted only when BOTH hold:
+#   1. normalized competition score improves over the champion by at
+#      least min_normalized_score_improvement, and
+#   2. no regression probe drops by more than max_allowed_regression
+#      relative to the base model.
+promotion_gates:
+  min_normalized_score_improvement: 0.01
+  max_allowed_regression: 0.02
+  require_submission_validity: true
+  min_submission_validity: 0.9

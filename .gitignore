@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Kaggle
+.kaggle/
+kaggle.json
+*.ipynb_checkpoints/
+.ipynb_checkpoints
+
+# Training outputs and checkpoints (large; never commit)
+output/
+checkpoints/
+*.ckpt
+*.safetensors
+runs/
+
+# Datasets: raw training files are generated, not committed.
+# Manifests under data/manifests/ ARE committed (provenance).
+data/*.jsonl
+data/*.csv
+data/*.parquet
+
+# Secrets and local environment
+.env
+*.env
+*.pem
+*.key
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/

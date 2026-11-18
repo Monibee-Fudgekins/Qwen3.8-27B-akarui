@@ -1,0 +1,60 @@
+# Qwen3.8-27B-akarui — base training configuration.
+#
+# Base model (verified): Qwen/Qwen3.8-27B
+#   Pinned revision: 37561816e66b5b9153b1b64c10968c18c1e6f4a0
+#   Architecture: Qwen3_5ForConditionalGeneration (model_type qwen3_5)
+#   Text: hidden 5120, 64 layers, 24 heads, 4 KV heads, intermediate 17408,
+#         vocab 248320, max_position_embeddings 262144
+#   Vision: hidden 1152, patch 16. License: Apache 2.0. 18 safetensors shards.
+#   Config was saved with transformers 5.8.0.dev0 — the runtime must check
+#   that the installed transformers supports qwen3_5 before loading.
+#
+# Stage configs (sft.yaml, dpo.yaml, grpo.yaml) inherit this file via
+# `base: base.yaml` and override only stage-specific keys.
+
+base_model: Qwen/Qwen3.8-27B
+base_revision: 37561816e66b5b9153b1b64c10968c18c1e6f4a0
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_use_double_quant: true
+  bnb_4bit_compute_dtype: bfloat16
+
+lora:
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  task_type: CAUSAL_LM
+
+training:
+  learning_rate: 0.0001
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  max_seq_length: 4096
+  num_train_epochs: 1
+  bf16: true
+  gradient_checkpointing: true
+  optim: adamw_bnb_8bit
+  logging_steps: 10
+  save_steps: 100
+  seed: 42
+
+hardware:
+  min_gpu_memory_gb: 20
+
+dataset:
+  version: "v0"
+  train_file: data/train.jsonl
+
+output_dir: output/akarui-sft-v0

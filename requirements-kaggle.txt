@@ -1,0 +1,19 @@
+# Qwen3.8-27B-akarui — Kaggle notebook dependencies.
+#
+# Same core training stack as requirements.txt, without the test tooling
+# (pytest) that Kaggle notebooks do not need. Pins are reviewed
+# deliberately, never auto-bumped; see requirements.txt for the policy.
+
+torch~=2.7.0
+transformers~=4.57.0
+peft~=0.17.0
+trl~=0.23.0
+accelerate~=1.10.0
+bitsandbytes~=0.48.0
+datasets~=4.4.0
+safetensors~=0.6.0
+kagglehub~=0.3.0
+kaggle~=1.7.0
+pyyaml~=6.0.0
+pandas~=2.3.0
+scikit-learn~=1.7.0
