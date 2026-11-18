@@ -1,0 +1,44 @@
+# Weekly Akarui Training — orchestration trigger only.
+#
+# This workflow does NOT train on GitHub-hosted runners. It triggers the
+# Kaggle training notebook via scripts/trigger_kaggle.py, which submits the
+# notebook to Kaggle, polls for completion, and verifies the run actually
+# finished before exiting 0.
+#
+# Weekly retraining is evidence-driven: a candidate is trained, evaluated
+# and promoted only if it passes the release gates in
+# configs/evaluation.yaml. Training completing does not imply promotion.
+
+name: Weekly Akarui Training
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: akarui-weekly-training
+  cancel-in-progress: false
+
+jobs:
+  trigger-training:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install trigger dependencies
+        run: pip install pyyaml kagglehub
+
+      - name: Trigger Kaggle training
+        run: python scripts/trigger_kaggle.py
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
