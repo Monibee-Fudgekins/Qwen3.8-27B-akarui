@@ -1,13 +1,40 @@
-# Weekly Akarui Training — orchestration trigger only.
+# Weekly Akarui Training + automated evaluate-and-promote — orchestration only.
 #
-# This workflow does NOT train on GitHub-hosted runners. It triggers the
-# Kaggle training notebook via scripts/trigger_kaggle.py, which submits the
-# notebook to Kaggle, polls for completion, and verifies the run actually
-# finished before exiting 0.
+# This workflow does NOT train on GitHub-hosted runners and never loads
+# the 27B model there. It orchestrates Kaggle kernels via
+# scripts/trigger_kaggle.py (submit + poll, same pattern as before):
 #
-# Weekly retraining is evidence-driven: a candidate is trained, evaluated
-# and promoted only if it passes the release gates in
-# configs/evaluation.yaml. Training completing does not imply promotion.
+#   1. Trigger the SFT training kernel (Mon 08:00 UTC, or dispatch).
+#      A weekly-quota refusal records skipped_quota and ends the cycle.
+#   2. Package + trigger the eval kernel (notebook 07, GPU) in the
+#      dispatched mode: 'candidate' evaluates the trained adapter
+#      (mounted from the training kernel's output), 'base' evaluates
+#      the pinned base model (how the baseline gets measured).
+#   3. Download both kernels' outputs, build the provenance manifest,
+#      and run scripts/evaluate_and_promote.py: the gates in
+#      configs/evaluation.yaml decide. On a pass the adapter is
+#      published to the public Kaggle Model; on a failure it stays
+#      private and the workflow still exits 0 (a failing gate is a
+#      normal outcome, not a broken build).
+#   4. Commit the gate-decision record back to the repo (plus the
+#      champion file and release record on a promotion, or the
+#      measured baseline in 'base' mode).
+#
+# Baseline-first rule: until evaluation/baseline_results.json holds a
+# MEASURED base-model score, no promotion can pass -- the orchestrator
+# records the decision as 'blocked'. Measure it first with a dispatch
+# in 'base' mode (or the weekly run will keep blocking, correctly).
+#
+# Known limit (pre-existing, not introduced here): GitHub-hosted jobs
+# cap at 6h (timeout-minutes: 360), while a training kernel may run
+# ~10h and the eval kernel adds more. If the job is killed mid-poll,
+# the Kaggle kernel keeps running; re-dispatching re-pushes the
+# kernel, so a killed poll needs a manual check of the kernel status
+# on Kaggle before re-running. A short-poll + separate check workflow
+# (the sibling Glimmer pattern) would remove this limit.
+#
+# The manual publish path (.github/workflows/publish-model.yml, with
+# its confirm_gates_passed approval) is unchanged and is not used here.
 
 name: Weekly Akarui Training
 
@@ -15,17 +42,31 @@ on:
   schedule:
     - cron: "0 8 * * 1"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "'candidate': train + evaluate + gate + promote. 'base': measure the base model only (no training, no promotion)."
+        required: false
+        default: "candidate"
+        type: choice
+        options:
+          - candidate
+          - base
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: akarui-weekly-training
   cancel-in-progress: false
 
 jobs:
-  trigger-training:
+  train-evaluate-promote:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      TRAIN_KERNEL: monibeefudgekins/akarui-sft-training
+      EVAL_CANDIDATE_KERNEL: monibeefudgekins/akarui-eval-candidate
+      EVAL_BASELINE_KERNEL: monibeefudgekins/akarui-eval-baseline
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,10 +76,119 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install trigger dependencies
-        run: pip install pyyaml kagglehub
+      - name: Install dependencies
+        run: pip install pyyaml kaggle kagglehub
 
-      - name: Trigger Kaggle training
-        run: python scripts/trigger_kaggle.py
+      - name: Configure Kaggle CLI auth
+        run: python -c "import sys; sys.path.insert(0, 'scripts'); from kaggle_auth import configure_kaggle_auth; print(configure_kaggle_auth())"
         env:
           KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
+
+      - name: Trigger Kaggle training
+        if: ${{ inputs.mode != 'base' }}
+        run: python scripts/trigger_kaggle.py --run-record output/kaggle-run.json
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
+
+      - name: Check whether training ran
+        id: training
+        run: |
+          python - <<'EOF'
+          import json, os
+          from pathlib import Path
+          skipped = "false"
+          record = Path("output/kaggle-run.json")
+          if record.exists():
+              status = json.loads(record.read_text()).get("status")
+              print(f"training run status: {status}")
+              if status == "skipped_quota":
+                  skipped = "true"
+          else:
+              print("no training run record (base mode: no training was triggered)")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"skipped={skipped}\n")
+          EOF
+
+      - name: Package and trigger eval kernel
+        if: ${{ steps.training.outputs.skipped != 'true' }}
+        run: |
+          MODE="${{ inputs.mode || 'candidate' }}"
+          if [ "$MODE" = "base" ]; then KERNEL="$EVAL_BASELINE_KERNEL"; else KERNEL="$EVAL_CANDIDATE_KERNEL"; fi
+          python scripts/package_eval_kernel.py --mode "$MODE" --out kernels/eval
+          python scripts/trigger_kaggle.py --notebook-dir kernels/eval --kernel "$KERNEL" --run-record output/kaggle-eval-run.json
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
+
+      - name: Download kernel outputs
+        if: ${{ steps.training.outputs.skipped != 'true' }}
+        id: outputs
+        run: |
+          MODE="${{ inputs.mode || 'candidate' }}"
+          if [ "$MODE" = "base" ]; then KERNEL="$EVAL_BASELINE_KERNEL"; else KERNEL="$EVAL_CANDIDATE_KERNEL"; fi
+          kaggle kernels output "$KERNEL" -p output/eval
+          if [ "$MODE" = "candidate" ]; then
+            kaggle kernels output "$TRAIN_KERNEL" -p output/adapter
+          fi
+          # Kaggle's output layout may nest files; resolve by searching.
+          EVAL_RESULTS="$(find output/eval -name evaluation-results.json | head -1)"
+          if [ -z "$EVAL_RESULTS" ]; then echo "error: evaluation-results.json not found in eval kernel output"; exit 1; fi
+          echo "eval_results=$EVAL_RESULTS" >> "$GITHUB_OUTPUT"
+          if [ "$MODE" = "candidate" ]; then
+            ADAPTER_DIR="$(dirname "$(find output/adapter -name training_manifest.json | head -1)")"
+            if [ -z "$ADAPTER_DIR" ]; then echo "error: training_manifest.json not found in training kernel output"; exit 1; fi
+            echo "adapter_dir=$ADAPTER_DIR" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
+
+      - name: Record measured baseline
+        if: ${{ inputs.mode == 'base' && steps.training.outputs.skipped != 'true' }}
+        run: |
+          if python -c "import sys; sys.path.insert(0, 'src'); from src.evaluation.baseline import load_measured; sys.exit(0 if load_measured('evaluation/baseline_results.json') is None else 1)"; then
+            python scripts/record_baseline.py --evaluation "${{ steps.outputs.outputs.eval_results }}"
+          else
+            echo "baseline already measured; leaving it in place (re-measure locally with --force if intended)"
+          fi
+
+      - name: Resolve release versions
+        if: ${{ inputs.mode != 'base' && steps.training.outputs.skipped != 'true' }}
+        id: versions
+        run: |
+          python - <<'EOF'
+          import os, sys
+          sys.path.insert(0, 'scripts')
+          from evaluate_and_promote import _next_versions
+          from src.publishing.gate_decision import resolve_reference
+          _, kind, version = resolve_reference(
+              'evaluation/champion_results.json', 'evaluation/baseline_results.json')
+          release, model = _next_versions(version, kind)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"release_version={release}\nmodel_version={model}\n")
+          print(f"next release: {release} / {model} (reference: {kind} {version})")
+          EOF
+
+      - name: Build provenance and evaluate-and-promote
+        if: ${{ inputs.mode != 'base' && steps.training.outputs.skipped != 'true' }}
+        run: |
+          python scripts/build_provenance.py \
+            --adapter-dir "${{ steps.outputs.outputs.adapter_dir }}" \
+            --evaluation "${{ steps.outputs.outputs.eval_results }}" \
+            --release-version "${{ steps.versions.outputs.release_version }}" \
+            --output output/provenance.json
+          python scripts/evaluate_and_promote.py \
+            --evaluation "${{ steps.outputs.outputs.eval_results }}" \
+            --provenance output/provenance.json \
+            --adapter "${{ steps.outputs.outputs.adapter_dir }}" \
+            --release-version "${{ steps.versions.outputs.release_version }}" \
+            --model-version "${{ steps.versions.outputs.model_version }}" \
+            --run-record output/kaggle-run.json
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
+
+      - name: Commit gate decision and champion records
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add releases/ evaluation/baseline_results.json evaluation/champion_results.json 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "chore: record weekly gate decision $(date -u +%Y-%m-%d)"
+          git push
