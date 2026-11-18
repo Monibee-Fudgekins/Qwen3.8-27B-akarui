@@ -14,7 +14,110 @@ competition in the manifest.** Leakage checks
 evaluation run is accepted.
 
 > The manifest is an initial proposal — verify every competition ID
-> against Kaggle before the first run.
+> against Kaggle before the first run. Each entry now also carries
+> `metric_direction` (derived from the metric name, not measured).
+> No entry carries a `baseline_score`: baselines are computed
+> in-kernel by the solver (below), never invented.
+
+## Solver: how scores are measured
+
+`src/evaluation/solver.py` is the solver; `run_evaluation`
+(`src/evaluation/benchmark_runner.py`) builds it from the loaded
+model and passes it to `run_benchmark`, and runs the regression
+probes with the same generation callable.
+
+- **Generation.** One fixed prompt per competition (task, file
+  listing, column schema, target/id columns, metric, output
+  contract), greedy decoding (`do_sample=False`), fixed seed 42,
+  `max_new_tokens=4096`. Base and candidate get identical prompts.
+- **Local scoring, no leaderboard.** Kaggle test labels are hidden
+  and the eval kernel never submits to the leaderboard. Each
+  competition's *train* file is split 80/20 (seed 42) into a local
+  train/val split; the generated solution fits on the local train
+  part and predicts the local val part. Time series
+  (`store-sales-...`, `bike-sharing-demand`) split
+  chronologically (last 20% is val); the rest use a deterministic
+  hash-based split, stratified by target for classification.
+- **Execution.** Generated code runs only through
+  `src/agent/executor.py` (600 s wall-clock timeout, 4 GB
+  address-space limit, restricted working directory, environment
+  scrubbed of `KAGGLE_*` / `HF_TOKEN` / `AWS_*`). Timeout, crash,
+  missing or invalid `predictions.csv` → unmeasured (null scores),
+  never a fake score. Limitation, stated honestly: the Executor
+  does **not** block network access (the kernel needs the internet
+  for the base weights). The prompt forbids network/Kaggle-API use
+  and credentials are scrubbed, but network isolation is not
+  guaranteed by the sandbox.
+- **Metrics.** Accuracy, RMSLE, RMSE, F1, ROC AUC implemented in
+  pure stdlib in the solver. `predictions.csv` must carry
+  `id,prediction` for exactly the val rows (digit-recognizer has
+  no id column: row position is the id).
+- **Normalization / baselines.** No baseline numbers are invented.
+  The solver computes a fixed deterministic reference on the same
+  val split (no model involved) and reports
+  `normalized_score = candidate / reference` (higher-is-better)
+  or `reference / candidate` (lower-is-better), matching
+  `competition_evaluator._normalized_score`.
+
+### Per-competition scoring table
+
+| Competition | Metric | Target | Split | Reference (deterministic) |
+| --- | --- | --- | --- | --- |
+| titanic | Accuracy | Survived | stratified | Sex rule (female→1, else 0) |
+| house-prices-advanced-regression-techniques | RMSLE | SalePrice | random | median SalePrice |
+| digit-recognizer | Accuracy | label | stratified | majority digit |
+| spaceship-titanic | Accuracy | Transported | stratified | CryoSleep rule (true→1, else 0) |
+| playground-series-s3e11 | RMSLE | *(auto-detected: last column)* | random | median target |
+| store-sales-time-series-forecasting | RMSLE | sales | chronological (date) | median sales |
+| nlp-getting-started | F1 | target | stratified | disaster-keyword rule |
+| petfinder-pawpularity-score | RMSE | Pawpularity | random | median Pawpularity |
+| tabular-playground-series-jan-2024 | ROC AUC | *(auto-detected: last column)* | stratified | constant 0.5 (AUC 0.5) |
+| forest-cover-type-prediction | Accuracy | Cover_Type | stratified | majority class |
+| bike-sharing-demand | RMSLE | count | chronological (datetime) | median count |
+| commonlitreadabilityprize | RMSE | target | random | median target |
+
+Two target columns are not known from the repo and are
+auto-detected at runtime as the last column of `train.csv`
+(`playground-series-s3e11`, `tabular-playground-series-jan-2024`);
+the detected column is recorded per competition
+(`target_column`, `target_detected: true`) in the results — check
+it in the first live results before citing those two scores.
+
+### What cannot be scored as designed
+
+Nothing categorically. Three competitions are at elevated risk
+on the first live run and may come back unmeasured (gate fails
+closed, candidate stays private): **store-sales-...** (3M+ train
+rows; a generated solution fitting the full local train part may
+hit the 600 s execution timeout), **digit-recognizer** (42k×785
+pixels; a slow fit may time out), and **petfinder-...** (image
+files in the download; the reference and prompt use the tabular
+metadata only, so image signal is unscored). A download failure
+(auth, or a competition whose rules have not been accepted on
+kaggle.com — that cannot be fixed from the kernel) is likewise
+recorded `not_run` with null scores.
+
+### Runtime estimate (first live run, Wed 2026-11-25 08:00 UTC)
+
+Budget for the eval kernel, from the same 30 h/week Kaggle GPU
+quota as training (training budgets ~10 h; the weekly trainings
+are staggered — akarui Wed, gemma Mon, Glimmer Sat — so the eval
+run must fit the remaining quota that week):
+
+| Step | Estimate |
+| --- | --- |
+| Model load (27B NF4 + optional adapter) | ~10 min |
+| Competition downloads (12, incl. petfinder images) | ~10–20 min |
+| Generation (12 × ~3 min greedy, 4096 tokens) | ~35 min |
+| Reference baselines + split (streaming CSV) | ~10 min |
+| Solution execution (12 × ≤10 min cap) | ~20 min typical, ≤2 h worst case |
+| **Total** | **~1.5 h typical, ~3.5 h worst case** |
+
+The worst case assumes every solution runs to its timeout; the
+typical case assumes most finish in 1–2 min. If the kernel is
+killed or errors, no results file exists, the gate fails closed,
+and the candidate stays private. The first live run measures the
+real numbers; update this table with them.
 
 ## Configurations compared
 
@@ -99,9 +202,11 @@ the pinned base model) and triggered/polled with the same
 completes, the runner downloads `output/evaluation-results.json`
 and `scripts/evaluate_and_promote.py` runs the gate; only a pass
 publishes. The eval kernel draws from the same 30h/week Kaggle GPU
-quota as training, and its runtime is unmeasured until the first
-live run — if it is killed or errors, no results file exists, the
-gate fails closed, and the candidate stays private.
+quota as training, and its runtime is estimated in the solver
+section above (~1.5 h typical, ~3.5 h worst case) — unmeasured
+until the first live run (Wed 2026-11-25 08:00 UTC). If it is
+killed or errors, no results file exists, the gate fails closed,
+and the candidate stays private.
 
 ## Baseline measurement
 

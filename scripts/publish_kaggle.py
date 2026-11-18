@@ -10,10 +10,18 @@ Flow:
    re-verify the field names against the installed CLI version before the
    first real publication, because Kaggle's metadata schema evolves.
 3. Stage the adapter files plus metadata and upload with the Kaggle CLI
-   (``kaggle models create`` for a new model, ``kaggle models version
-   create`` for a new version), falling back to kagglehub's
-   ``model_upload`` when the CLI is unavailable.
-4. Never overwrite or delete previous stable versions.
+   (``kaggle models create`` for a new model, ``kaggle models instances
+   versions create <owner>/<model>/<framework>/<variation>`` for a new
+   version — there is no ``kaggle models version create`` subcommand),
+   falling back to kagglehub's ``model_upload`` when the CLI is unavailable.
+4. Verify the published model is PUBLIC and repair it if it is not:
+   the staged metadata carries ``"isPrivate": false`` (Kaggle
+   defaults a new model to private), and after the upload the
+   model's visibility is read back from Kaggle; a private model is
+   flipped public with ``kaggle models update``. If visibility
+   cannot be verified public, publication fails loudly instead of
+   leaving a silently private model.
+5. Never overwrite or delete previous stable versions.
 
 ``--dry-run`` writes the staged metadata and files without uploading, so
 the release can be inspected first. No credentials are ever written into
@@ -39,12 +47,14 @@ from verify_release import verify_release  # noqa: E402
 from src.evaluation.baseline import load_measured  # noqa: E402
 from src.publishing.kaggle_publisher import (  # noqa: E402
     DEFAULT_TAGS,
+    FRAMEWORK,
     MODEL_SLUG,
     MODEL_TITLE,
     KAGGLE_OWNER,
     VARIATIONS,
     build_model_metadata as build_kaggle_model_metadata,
     build_variation_metadata as build_kaggle_variation_metadata,
+    ensure_model_public,
 )
 
 KAGGLE_MODEL_URL = f"https://www.kaggle.com/models/{KAGGLE_OWNER}/{MODEL_SLUG}"
@@ -169,19 +179,32 @@ def _model_exists() -> bool:
     return result.returncode == 0
 
 
-def upload_with_cli(staging_dir: Path, release_version: str) -> None:
-    """Upload via the Kaggle CLI. Raises RuntimeError on failure."""
+def upload_with_cli(
+    staging_dir: Path, release_version: str, model_version: str
+) -> None:
+    """Upload via the Kaggle CLI. Raises RuntimeError on failure.
+
+    New model: ``kaggle models create -p <dir>``. Existing model:
+    ``kaggle models instances versions create
+    <owner>/<model>/<framework>/<variation> -p <dir> -n <notes>``
+    (kaggle 1.7.4 ``kaggle/cli.py`` ``parse_model_instance_versions``;
+    there is no ``kaggle models version create`` subcommand).
+    ``model_version`` is the release variation label, e.g.
+    ``qlora-sft-v1``.
+    """
     if shutil.which("kaggle") is None:
         raise RuntimeError("kaggle CLI not found on PATH")
     if _model_exists():
         command = [
             "kaggle",
             "models",
-            "version",
+            "instances",
+            "versions",
             "create",
+            f"{KAGGLE_OWNER}/{MODEL_SLUG}/{FRAMEWORK}/{model_version}",
             "-p",
             str(staging_dir),
-            "-m",
+            "-n",
             f"Release {release_version}",
         ]
     else:
@@ -291,7 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        upload_with_cli(staging_dir, args.release_version)
+        upload_with_cli(staging_dir, args.release_version, args.model_version)
     except RuntimeError as cli_error:
         print(f"kaggle CLI upload failed ({cli_error}); trying kagglehub...")
         try:
@@ -299,7 +322,20 @@ def main(argv: list[str] | None = None) -> int:
         except RuntimeError as hub_error:
             print(f"error: kagglehub upload also failed: {hub_error}", file=sys.stderr)
             return 1
+
+    # The model must be public: kagglehub creates a missing model
+    # private and the CLI path relies on the staged metadata, so
+    # read the visibility back and repair it if needed. A model
+    # that cannot be verified public is a failed publication.
+    try:
+        visibility = ensure_model_public(f"{KAGGLE_OWNER}/{MODEL_SLUG}")
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if visibility["repaired"]:
+        print("Model was private after upload; visibility repaired to public.")
     print(f"Published: {KAGGLE_MODEL_URL} (release {args.release_version})")
+    print(f"Visibility verified: public ({KAGGLE_MODEL_URL})")
     return 0
 
 

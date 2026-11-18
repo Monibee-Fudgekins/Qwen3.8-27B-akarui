@@ -25,6 +25,28 @@ held_out_competition_ids:
   - bike-sharing-demand
   - commonlitreadabilityprize
 
+# Solver settings (src/evaluation/solver.py). Fixed so base and
+# candidate runs are comparable; change them only with a reason
+# recorded in evaluation/evaluation_protocol.md.
+solver:
+  # Fixed seed for the local train/val split and for generation.
+  seed: 42
+  # Fraction of each competition's train file held out as local val
+  # (Kaggle test labels are hidden; the leaderboard is never used).
+  val_fraction: 0.2
+  # Greedy decoding, max new tokens per solution generation.
+  max_new_tokens: 4096
+  # Sandboxed execution budget per competition (Executor timeout
+  # in seconds, address-space limit in MB).
+  execution_timeout_s: 600
+  execution_memory_mb: 4096
+  # Where competition data is downloaded (Kaggle CLI) in-kernel.
+  data_root: evaluation-data
+  # Training file the leakage guard checks before any run.
+  train_file: data/train.jsonl
+  # Regression probes run with the same generation callable.
+  regression_probes_file: evaluation/regression_probes.json
+
 # Regression probes: base-model capabilities that must be retained.
 # Each probe is a small eval with a minimum acceptable score, measured
 # against the base model. Scores are task-specific (0-1) and recorded in

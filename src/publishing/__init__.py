@@ -5,7 +5,13 @@ provenance manifests, and release records. Nothing in this package
 ever prints or stores credentials.
 """
 
-from .kaggle_publisher import build_model_metadata, build_variation_metadata, upload_variation
+from .kaggle_publisher import (
+    build_model_metadata,
+    build_variation_metadata,
+    ensure_model_public,
+    get_model_is_private,
+    upload_variation,
+)
 from .model_card import render_model_card
 from .provenance import (
     build_provenance,
@@ -18,6 +24,8 @@ from .release_manifest import list_releases, load_release, write_release
 __all__ = [
     "build_model_metadata",
     "build_variation_metadata",
+    "ensure_model_public",
+    "get_model_is_private",
     "upload_variation",
     "render_model_card",
     "build_provenance",

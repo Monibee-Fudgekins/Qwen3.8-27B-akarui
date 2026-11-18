@@ -11,7 +11,11 @@ self-contained directory (default ``kernels/eval/``):
   downloaded from Hugging Face in-kernel at the pinned revision)
 * copies of ``src/``, ``scripts/``, ``configs/``, ``evaluation/``
   (benchmark manifest + protocol) and ``data/train.jsonl`` (the
-  training file, so the notebook's leakage check can run in-kernel)
+  training file, so the notebook's leakage check can run in-kernel).
+  ``src/evaluation/solver.py`` (copied with ``src/``) is the
+  solver that produces measured scores; ``scripts/kaggle_auth.py``
+  is required because the solver downloads competition data with
+  the Kaggle CLI in-kernel.
 * ``eval-mode.json`` -- ``{"mode": "candidate"|"base"}``, read by
   the notebook to decide whether to evaluate the trained adapter
   or the pinned base model
@@ -70,6 +74,8 @@ REQUIRED_FILES = [
     NOTEBOOK_SRC,
     Path("scripts/evaluate.py"),
     Path("scripts/verify_release.py"),
+    Path("scripts/kaggle_auth.py"),
+    Path("src/evaluation/solver.py"),
     Path("configs/evaluation.yaml"),
     Path("evaluation/benchmark_manifest.json"),
     Path("data/train.jsonl"),
