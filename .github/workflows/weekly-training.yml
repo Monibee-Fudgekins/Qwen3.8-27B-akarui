@@ -77,7 +77,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install pyyaml kaggle kagglehub
+        run: pip install pyyaml kaggle kagglehub six
 
       - name: Configure Kaggle CLI auth
         run: python -c "import sys; sys.path.insert(0, 'scripts'); from kaggle_auth import configure_kaggle_auth; print(configure_kaggle_auth())"
