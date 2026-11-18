@@ -1,0 +1,30 @@
+{
+  "dataset_version": "v0",
+  "created_at": "2026-11-18T17:17:46.344345Z",
+  "record_count": 12,
+  "invalid_count": 0,
+  "invalid_records": [],
+  "category_counts": {
+    "competition_analysis": 4,
+    "experiment_optimization": 4,
+    "feature_engineering_modeling": 4
+  },
+  "source_hashes": [
+    "8e32a7f8e1fbc8f94b866429ad758439b2f682f03973ccc5f94da199b886d441",
+    "8e32a7f8e1fbc8f94b866429ad758439b2f682f03973ccc5f94da199b886d441",
+    "8e32a7f8e1fbc8f94b866429ad758439b2f682f03973ccc5f94da199b886d441",
+    "e3932f3b0ff0dc5a8adb7e9fea559aad8d6f536717964e084fd392375a45c1a3",
+    "e3932f3b0ff0dc5a8adb7e9fea559aad8d6f536717964e084fd392375a45c1a3",
+    "e3932f3b0ff0dc5a8adb7e9fea559aad8d6f536717964e084fd392375a45c1a3",
+    "56c1231da3642c61905f465edcc1822aa2fc0fb340f18f3bad4465997d3e3635",
+    "56c1231da3642c61905f465edcc1822aa2fc0fb340f18f3bad4465997d3e3635",
+    "56c1231da3642c61905f465edcc1822aa2fc0fb340f18f3bad4465997d3e3635",
+    "8313f1eb649b9f547a6d4db0383edf278fd95ac1a58ce3eb4d2238e0ba7fa4eb",
+    "8313f1eb649b9f547a6d4db0383edf278fd95ac1a58ce3eb4d2238e0ba7fa4eb",
+    "8313f1eb649b9f547a6d4db0383edf278fd95ac1a58ce3eb4d2238e0ba7fa4eb"
+  ],
+  "licenses": [
+    "CC-BY-4.0"
+  ],
+  "sha256": "26a17358fe3a30cc51f613493a6ef1a099727092cf248cc6cddb93785b2e31e4"
+}

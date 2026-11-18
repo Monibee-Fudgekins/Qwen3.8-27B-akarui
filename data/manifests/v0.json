@@ -1,0 +1,56 @@
+{
+  "dataset_version": "v0",
+  "created_at": "2026-11-18T17:17:46.344345Z",
+  "sources": [
+    {
+      "source_url": "https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data",
+      "license": "CC-BY-4.0",
+      "sha256": "5b00264637dbfec36bdeaab5676b0b309ff9eb788d63554ca0a249491c86603d",
+      "collected_at": "2026-11-18T17:17:46.277338Z",
+      "filtering_decisions": "Kept all rows of the downloaded file; no rows dropped at collection. Pima Indians diabetes was considered and DROPPED: its UCI download URLs return 404 and the only mirrors found carry no verifiable license. No held-out benchmark competition data was used."
+    },
+    {
+      "source_url": "https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/wdbc.data",
+      "license": "CC-BY-4.0",
+      "sha256": "d606af411f3e5be8a317a5a8b652b425aaf0ff38ca683d5327ffff94c3695f4a",
+      "collected_at": "2026-11-18T17:17:46.277338Z",
+      "filtering_decisions": "Kept all rows of the downloaded file; no rows dropped at collection. Pima Indians diabetes was considered and DROPPED: its UCI download URLs return 404 and the only mirrors found carry no verifiable license. No held-out benchmark competition data was used."
+    },
+    {
+      "source_url": "https://archive.ics.uci.edu/ml/machine-learning-databases/heart-disease/processed.cleveland.data",
+      "license": "CC-BY-4.0",
+      "sha256": "a74b7efa387bc9d108d7d0115d831fe9b414b29ae7124f331b622b4efa0427c8",
+      "collected_at": "2026-11-18T17:17:46.277338Z",
+      "filtering_decisions": "Kept all rows of the downloaded file; no rows dropped at collection. Pima Indians diabetes was considered and DROPPED: its UCI download URLs return 404 and the only mirrors found carry no verifiable license. No held-out benchmark competition data was used."
+    },
+    {
+      "source_url": "https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv",
+      "license": "CC-BY-4.0",
+      "sha256": "4a402cf041b025d4566d954c3b9ba8635a3a8a01e039005d97d6a710278cf05e",
+      "collected_at": "2026-11-18T17:17:46.277338Z",
+      "filtering_decisions": "Kept all rows of the downloaded file; no rows dropped at collection. Pima Indians diabetes was considered and DROPPED: its UCI download URLs return 404 and the only mirrors found carry no verifiable license. No held-out benchmark competition data was used."
+    }
+  ],
+  "record_counts": {
+    "competition_analysis": 4,
+    "experiment_optimization": 4,
+    "feature_engineering_modeling": 4,
+    "total": 12
+  },
+  "sha256": "26a17358fe3a30cc51f613493a6ef1a099727092cf248cc6cddb93785b2e31e4",
+  "excluded_competitions": [
+    "titanic",
+    "house-prices-advanced-regression-techniques",
+    "digit-recognizer",
+    "spaceship-titanic",
+    "playground-series-s3e11",
+    "store-sales-time-series-forecasting",
+    "nlp-getting-started",
+    "petfinder-pawpularity-score",
+    "tabular-playground-series-jan-2024",
+    "forest-cover-type-prediction",
+    "bike-sharing-demand",
+    "commonlitreadabilityprize"
+  ],
+  "notes": "v0: 12 trajectories from 4 public UCI datasets (CC-BY-4.0), 3 runs each (analysis/baseline, linear model, tree ensemble), every score measured on a real 80/20 holdout in the local sandbox. generated_code per record is the shared solution script for that competition plus the variant invocation line; records differ in task, reasoning, model, score and execution output. competition_id values are public-dataset task IDs (UCI-sourced), NOT official Kaggle leaderboard competitions: Kaggle competition downloads require authentication, which was unavailable, so the underlying public UCI datasets were used instead. No held-out benchmark IDs appear. Raw files are NOT committed; sha256 values above are of the local raw downloads."
+}
