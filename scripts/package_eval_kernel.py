@@ -63,8 +63,11 @@ KERNEL_IDS = {
     "base": "monibeefudgekins/akarui-eval-baseline",
 }
 KERNEL_TITLES = {
-    "candidate": "Akarui evaluation — candidate adapter (held-out benchmark)",
-    "base": "Akarui evaluation — base model baseline (held-out benchmark)",
+    # ASCII only: the Kaggle SaveKernel API rejected the push (HTTP 400)
+    # when these titles contained an em-dash. The sibling Glimmer and
+    # gemma kernels use ASCII titles and push fine.
+    "candidate": "Akarui evaluation - candidate adapter (held-out benchmark)",
+    "base": "Akarui evaluation - base model baseline (held-out benchmark)",
 }
 #: The training kernel whose output (the adapter) the candidate-mode
 #: eval kernel mounts as an input.
