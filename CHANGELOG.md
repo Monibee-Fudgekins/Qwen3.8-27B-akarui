@@ -5,6 +5,26 @@ format follows Keep a Changelog; the repository uses semantic
 versioning and Kaggle model versions increment per published
 variation version.
 
+## [0.2.0](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/compare/v0.1.0...v0.2.0) (2026-11-21)
+
+
+### Features
+
+* automated evaluate-and-promote lifecycle with gated Kaggle publication ([b1ce3de](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/b1ce3de09ce39e0dfbc1138df6e19c021b31d1e7))
+* submit-only trigger + cycle check workflow support ([15954e5](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/15954e5ed412d44f3537f77f169927e0dd65e5b9))
+
+
+### Bug Fixes
+
+* add six — kaggle 1.7 imports it but does not declare it (CLI fails to start without it) ([23d68f0](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/23d68f0cb8ea73ed5569baeb1a3042e1d7db1d18))
+* ASCII-only eval kernel titles — Kaggle SaveKernel 400'd on the em-dash ([3d2b5b7](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/3d2b5b7b73cf46b68ee16adaca8376d604e45519))
+* auto-merge condition checks PR author, not who pushed ([646f935](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/646f93519747c0ec637871950a261f5a1dd42107))
+* kernel titles must slugify to their ids (Kaggle creates kernel under title-derived slug) + resilient status polling ([85e4583](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/85e45835ec245d024d2e517a8ace29219a98ca0c))
+* kernels self-bootstrap from the public repo; eval mode baked at package time ([d8773b8](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/d8773b89be02ab0411e58fb1db12b0104763ff21))
+* quota exhaustion at push or kernel start is a graceful skip, not a failure; diagnostic reports API error field ([7f6fc37](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/7f6fc3772b9ef79d510542533a408c607eb2ec63))
+* restore required shell escaping in auto-merge jq filter ([e826a42](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/e826a42344bd4c0250c31678e026d81e38a5068e))
+* shorten eval kernel titles to &lt;=50 chars (Kaggle SaveKernel 400) + guard both packagers + tests ([d8e5693](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/d8e5693ff4746f20bdaebbe24a1bedb11ddb413c))
+
 ## [Unreleased]
 
 - Publish-path hardening (first live publish is Wed 2026-11-25 08:00 UTC):
