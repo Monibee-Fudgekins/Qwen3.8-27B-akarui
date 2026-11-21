@@ -1,37 +1,24 @@
-# Weekly Akarui Training + automated evaluate-and-promote — orchestration only.
+# Weekly Akarui Training — trigger only (short-poll).
 #
 # This workflow does NOT train on GitHub-hosted runners and never loads
-# the 27B model there. It orchestrates Kaggle kernels via
-# scripts/trigger_kaggle.py (submit + poll, same pattern as before):
+# the 27B model there. It only STARTS a Kaggle cycle and records it:
 #
-#   1. Trigger the SFT training kernel (Wed 08:00 UTC, or dispatch).
-#      A weekly-quota refusal records skipped_quota and ends the cycle.
-#   2. Package + trigger the eval kernel (notebook 07, GPU) in the
-#      dispatched mode: 'candidate' evaluates the trained adapter
-#      (mounted from the training kernel's output), 'base' evaluates
-#      the pinned base model (how the baseline gets measured).
-#   3. Download both kernels' outputs, build the provenance manifest,
-#      and run scripts/evaluate_and_promote.py: the gates in
-#      configs/evaluation.yaml decide. On a pass the adapter is
-#      published to the public Kaggle Model; on a failure it stays
-#      private and the workflow still exits 0 (a failing gate is a
-#      normal outcome, not a broken build).
-#   4. Commit the gate-decision record back to the repo (plus the
-#      champion file and release record on a promotion, or the
-#      measured baseline in 'base' mode).
+#   1. Trigger the SFT training kernel (Wed 08:00 UTC, or dispatch) in
+#      candidate mode, or the eval kernel in base mode. The trigger
+#      submits the kernel and confirms it started (queued/running) --
+#      it does NOT wait for completion. A run that waits on Kaggle
+#      burns the whole job: the old flow held the runner up to the
+#      6h cap and was killed mid-poll, so the promote step never ran.
+#   2. Write the cycle state to evaluation/akarui-cycle.json and commit
+#      it. The check workflow (.github/workflows/check-training.yml)
+#      reads that state every 6h, triggers the eval kernel when
+#      training completes, and runs the gate/promote/commit steps when
+#      the eval completes.
 #
-# Baseline-first rule: until evaluation/baseline_results.json holds a
-# MEASURED base-model score, no promotion can pass -- the orchestrator
-# records the decision as 'blocked'. Measure it first with a dispatch
-# in 'base' mode (or the weekly run will keep blocking, correctly).
-#
-# Known limit (pre-existing, not introduced here): GitHub-hosted jobs
-# cap at 6h (timeout-minutes: 360), while a training kernel may run
-# ~10h and the eval kernel adds more. If the job is killed mid-poll,
-# the Kaggle kernel keeps running; re-dispatching re-pushes the
-# kernel, so a killed poll needs a manual check of the kernel status
-# on Kaggle before re-running. A short-poll + separate check workflow
-# (the sibling Glimmer pattern) would remove this limit.
+# A weekly-quota refusal records skipped_quota and ends the cycle
+# (state phase=idle). No promotion can pass until
+# evaluation/baseline_results.json holds a MEASURED base-model score
+# (measure it first with a dispatch in 'base' mode).
 #
 # The manual publish path (.github/workflows/publish-model.yml, with
 # its confirm_gates_passed approval) is unchanged and is not used here.
@@ -51,18 +38,30 @@ on:
         options:
           - candidate
           - base
+      force:
+        description: "'true': start a new cycle even if the state file says one is active or uncollected."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 permissions:
   contents: write
 
+# The weekly trigger and the check workflow share one group so they
+# never race on the cycle state file. A check that is mid-transition
+# delays the weekly dispatch (and vice versa); neither cancels the other.
 concurrency:
-  group: akarui-weekly-training
+  group: akarui-training
   cancel-in-progress: false
 
 jobs:
-  train-evaluate-promote:
+  trigger:
+    name: Trigger Kaggle cycle
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 30
     env:
       TRAIN_KERNEL: monibeefudgekins/akarui-sft-training
       EVAL_CANDIDATE_KERNEL: monibeefudgekins/akarui-eval-candidate
@@ -84,9 +83,53 @@ jobs:
         env:
           KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
 
+      # Guard: never start a second cycle while one is already active.
+      # Reads the committed state; if a cycle is in training/eval and
+      # its kernel is still queued/running -- or finished but not yet
+      # collected by the check workflow -- this dispatch exits quietly
+      # and the active cycle continues under the check workflow.
+      # A kernel that errored/cancelled is a dead cycle: proceed with
+      # a fresh dispatch. Fails OPEN: a status-call error proceeds
+      # with the dispatch instead of blocking the weekly run on a
+      # Kaggle API hiccup. `force` bypasses the guard entirely.
+      - name: Check for an active cycle
+        id: guard
+        run: |
+          python - <<'EOF'
+          import json, os, subprocess
+          from pathlib import Path
+          active = "false"
+          force = "${{ inputs.force || 'false' }}" == "true"
+          state_path = Path("evaluation/akarui-cycle.json")
+          if not force and state_path.exists():
+              try:
+                  state = json.loads(state_path.read_text())
+              except json.JSONDecodeError:
+                  state = {}
+              phase = state.get("phase")
+              if phase in ("training", "eval"):
+                  kernel = state.get("train_kernel") if phase == "training" else state.get("eval_kernel")
+                  if kernel:
+                      try:
+                          out = subprocess.run(["kaggle", "kernels", "status", kernel],
+                                               capture_output=True, text=True, timeout=120)
+                          text = (out.stdout + out.stderr).lower()
+                          if "error" in text or "cancelled" in text:
+                              print(f"stale state: phase={phase} kernel={kernel} ended; proceeding with a fresh dispatch")
+                          elif "running" in text or "queued" in text or "complete" in text:
+                              active = "true"
+                              print(f"cycle already active: phase={phase} kernel={kernel}; skipping this dispatch (use force=true to override)")
+                          else:
+                              print(f"warning: kernel status unparseable ({text.strip()[:200]}); proceeding with the dispatch")
+                      except Exception as exc:
+                          print(f"warning: could not check kernel status ({exc}); proceeding with the dispatch")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"active={active}\n")
+          EOF
+
       - name: Trigger Kaggle training
-        if: ${{ inputs.mode != 'base' }}
-        run: python scripts/trigger_kaggle.py --run-record output/kaggle-run.json
+        if: ${{ inputs.mode != 'base' && steps.guard.outputs.active != 'true' }}
+        run: python scripts/trigger_kaggle.py --run-record output/kaggle-run.json --submit-only
         env:
           KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
 
@@ -110,12 +153,12 @@ jobs:
           EOF
 
       - name: Package and trigger eval kernel
-        if: ${{ steps.training.outputs.skipped != 'true' }}
+        if: ${{ inputs.mode == 'base' && steps.training.outputs.skipped != 'true' && steps.guard.outputs.active != 'true' }}
         run: |
           MODE="${{ inputs.mode || 'candidate' }}"
           if [ "$MODE" = "base" ]; then KERNEL="$EVAL_BASELINE_KERNEL"; else KERNEL="$EVAL_CANDIDATE_KERNEL"; fi
           python scripts/package_eval_kernel.py --mode "$MODE" --out kernels/eval
-          python scripts/trigger_kaggle.py --notebook-dir kernels/eval --kernel "$KERNEL" --run-record output/kaggle-eval-run.json
+          python scripts/trigger_kaggle.py --notebook-dir kernels/eval --kernel "$KERNEL" --run-record output/kaggle-eval-run.json --submit-only
         env:
           KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
 
@@ -125,76 +168,46 @@ jobs:
         env:
           KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
 
-      - name: Download kernel outputs
-        if: ${{ steps.training.outputs.skipped != 'true' }}
-        id: outputs
-        run: |
-          MODE="${{ inputs.mode || 'candidate' }}"
-          if [ "$MODE" = "base" ]; then KERNEL="$EVAL_BASELINE_KERNEL"; else KERNEL="$EVAL_CANDIDATE_KERNEL"; fi
-          kaggle kernels output "$KERNEL" -p output/eval
-          if [ "$MODE" = "candidate" ]; then
-            kaggle kernels output "$TRAIN_KERNEL" -p output/adapter
-          fi
-          # Kaggle's output layout may nest files; resolve by searching.
-          EVAL_RESULTS="$(find output/eval -name evaluation-results.json | head -1)"
-          if [ -z "$EVAL_RESULTS" ]; then echo "error: evaluation-results.json not found in eval kernel output"; exit 1; fi
-          echo "eval_results=$EVAL_RESULTS" >> "$GITHUB_OUTPUT"
-          if [ "$MODE" = "candidate" ]; then
-            ADAPTER_DIR="$(dirname "$(find output/adapter -name training_manifest.json | head -1)")"
-            if [ -z "$ADAPTER_DIR" ]; then echo "error: training_manifest.json not found in training kernel output"; exit 1; fi
-            echo "adapter_dir=$ADAPTER_DIR" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
-
-      - name: Record measured baseline
-        if: ${{ inputs.mode == 'base' && steps.training.outputs.skipped != 'true' }}
-        run: |
-          if python -c "import sys; sys.path.insert(0, 'src'); from src.evaluation.baseline import load_measured; sys.exit(0 if load_measured('evaluation/baseline_results.json') is None else 1)"; then
-            python scripts/record_baseline.py --evaluation "${{ steps.outputs.outputs.eval_results }}"
-          else
-            echo "baseline already measured; leaving it in place (re-measure locally with --force if intended)"
-          fi
-
-      - name: Resolve release versions
-        if: ${{ inputs.mode != 'base' && steps.training.outputs.skipped != 'true' }}
-        id: versions
+      # Record the cycle state for the check workflow. Candidate mode:
+      # phase=training (the check triggers the eval kernel when training
+      # completes). Base mode: phase=eval (the eval kernel was just
+      # triggered here). Quota skip: phase=idle. When the guard found an
+      # active cycle, this step is skipped so the active state is kept.
+      - name: Write cycle state
+        id: state
+        if: ${{ steps.guard.outputs.active != 'true' }}
         run: |
           python - <<'EOF'
-          import os, sys
-          sys.path.insert(0, 'scripts')
-          from evaluate_and_promote import _next_versions
-          from src.publishing.gate_decision import resolve_reference
-          _, kind, version = resolve_reference(
-              'evaluation/champion_results.json', 'evaluation/baseline_results.json')
-          release, model = _next_versions(version, kind)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f"release_version={release}\nmodel_version={model}\n")
-          print(f"next release: {release} / {model} (reference: {kind} {version})")
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          mode = "${{ inputs.mode || 'candidate' }}"
+          skipped = "${{ steps.training.outputs.skipped }}" == "true"
+          now = datetime.now(timezone.utc).isoformat()
+          if skipped:
+              state = {"cycle": now[:10], "mode": mode, "phase": "idle",
+                       "reason": "skipped_quota", "dispatched_at": now, "updated_at": now}
+          elif mode == "base":
+              state = {"cycle": now[:10], "mode": mode, "phase": "eval",
+                       "train_kernel": "monibeefudgekins/akarui-sft-training",
+                       "eval_kernel": "monibeefudgekins/akarui-eval-baseline",
+                       "dispatched_at": now, "updated_at": now}
+          else:
+              state = {"cycle": now[:10], "mode": mode, "phase": "training",
+                       "train_kernel": "monibeefudgekins/akarui-sft-training",
+                       "eval_kernel": "monibeefudgekins/akarui-eval-candidate",
+                       "dispatched_at": now, "updated_at": now}
+          path = Path("evaluation/akarui-cycle.json")
+          path.parent.mkdir(parents=True, exist_ok=True)
+          path.write_text(json.dumps(state, indent=2) + "\n")
+          print(f"cycle state written: phase={state['phase']} mode={mode}")
           EOF
 
-      - name: Build provenance and evaluate-and-promote
-        if: ${{ inputs.mode != 'base' && steps.training.outputs.skipped != 'true' }}
-        run: |
-          python scripts/build_provenance.py \
-            --adapter-dir "${{ steps.outputs.outputs.adapter_dir }}" \
-            --evaluation "${{ steps.outputs.outputs.eval_results }}" \
-            --release-version "${{ steps.versions.outputs.release_version }}" \
-            --output output/provenance.json
-          python scripts/evaluate_and_promote.py \
-            --evaluation "${{ steps.outputs.outputs.eval_results }}" \
-            --provenance output/provenance.json \
-            --adapter "${{ steps.outputs.outputs.adapter_dir }}" \
-            --release-version "${{ steps.versions.outputs.release_version }}" \
-            --model-version "${{ steps.versions.outputs.model_version }}" \
-            --run-record output/kaggle-run.json
-        env:
-          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
-
-      - name: Commit gate decision and champion records
+      - name: Commit cycle state
+        if: ${{ steps.guard.outputs.active != 'true' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add releases/ evaluation/baseline_results.json evaluation/champion_results.json 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "chore: record weekly gate decision $(date -u +%Y-%m-%d)"
+          git add evaluation/akarui-cycle.json
+          git diff --cached --quiet || git commit -m "chore: akarui cycle started $(date -u +%Y-%m-%d) (${{ inputs.mode || 'candidate' }})"
           git push
