@@ -1,0 +1,207 @@
+# Check Akarui Training — advance the weekly cycle, cheaply.
+#
+# The weekly workflow (.github/workflows/weekly-training.yml) only
+# STARTS a Kaggle cycle and records it in evaluation/akarui-cycle.json.
+# This workflow advances that state every 6h (~1 min of runner time
+# when nothing is active: it reads the state file and exits before
+# installing anything):
+#
+#   phase=training + training COMPLETE  -> package + trigger the eval kernel
+#   phase=eval + eval COMPLETE         -> download outputs, run the
+#      gate/promote (candidate) or record the baseline (base), commit
+#   phase=training/eval + kernel ERROR -> fail loudly, state phase=failed
+#   phase=training/eval + still running -> exit quietly, no failure
+#   no state / phase idle|done|failed  -> exit quietly
+#
+# The advance logic lives in scripts/advance_cycle.py (unit-tested);
+# this workflow only runs it and then performs the completion steps
+# with the same step bodies the weekly workflow used to run inline.
+# A failing gate is a normal outcome, not a broken build (the
+# evaluate-and-promote step exits 0); only a kernel error or an
+# infrastructure failure fails this workflow.
+#
+# Cadence is 6h, not 12h: this repo is public, so its runner minutes
+# are free (GitHub bills standard runners only on private repos), and
+# 6h keeps the cycle finishing within about a day of training
+# completing instead of up to two. The idle run is ~1 min.
+
+name: Check Akarui Training
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"  # every 6 hours
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Same group as the weekly trigger: the two never race on the cycle
+# state file. Neither cancels the other.
+concurrency:
+  group: akarui-training
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: check Kaggle cycle state
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TRAIN_KERNEL: monibeefudgekins/akarui-sft-training
+      EVAL_CANDIDATE_KERNEL: monibeefudgekins/akarui-eval-candidate
+      EVAL_BASELINE_KERNEL: monibeefudgekins/akarui-eval-baseline
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # Fast path: read the state before installing anything. When no
+      # cycle is active this is the whole run (~1 min). A state file
+      # that exists but cannot be parsed fails loudly: a corrupt state
+      # must never silently disable the cycle.
+      - name: Read cycle state
+        id: state
+        run: |
+          python - <<'EOF'
+          import json, os, sys
+          from pathlib import Path
+          state_path = Path("evaluation/akarui-cycle.json")
+          phase = "missing"
+          mode = "candidate"
+          if state_path.exists():
+              try:
+                  state = json.loads(state_path.read_text())
+              except json.JSONDecodeError as exc:
+                  print(f"::error::cycle state file is not valid JSON: {exc}")
+                  sys.exit(1)
+              phase = state.get("phase")
+              if phase is None:
+                  print("::error::cycle state file has no 'phase' key")
+                  sys.exit(1)
+              mode = state.get("mode", "candidate")
+          active = "true" if phase in ("training", "eval") else "false"
+          print(f"cycle phase={phase} mode={mode} active={active}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"phase={phase}\nmode={mode}\nactive={active}\n")
+          EOF
+
+      - name: Set up Python
+        if: ${{ steps.state.outputs.active == 'true' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: ${{ steps.state.outputs.active == 'true' }}
+        run: pip install pyyaml kaggle kagglehub six
+
+      - name: Configure Kaggle CLI auth
+        if: ${{ steps.state.outputs.active == 'true' }}
+        run: python -c "import sys; sys.path.insert(0, 'scripts'); from kaggle_auth import configure_kaggle_auth; print(configure_kaggle_auth())"
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
+
+      - name: Advance cycle
+        id: advance
+        if: ${{ steps.state.outputs.active == 'true' }}
+        run: python scripts/advance_cycle.py
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
+
+      # Only for a push/trigger failure: diagnose_kernel_push.py
+      # RE-ATTEMPTS the push, so it must never run after a kernel
+      # error (that would start a stray kernel version outside the
+      # state machine). advance_cycle reports the reason for this.
+      - name: Diagnose failed kernel push
+        if: ${{ failure() && steps.advance.outputs.reason == 'push_failed' }}
+        run: python scripts/diagnose_kernel_push.py --notebook-dir kernels/eval
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
+
+      - name: Download kernel outputs
+        if: ${{ steps.advance.outputs.action == 'completed' }}
+        id: outputs
+        run: |
+          MODE="${{ steps.advance.outputs.mode }}"
+          if [ "$MODE" = "base" ]; then KERNEL="$EVAL_BASELINE_KERNEL"; else KERNEL="$EVAL_CANDIDATE_KERNEL"; fi
+          kaggle kernels output "$KERNEL" -p output/eval
+          if [ "$MODE" = "candidate" ]; then
+            kaggle kernels output "$TRAIN_KERNEL" -p output/adapter
+          fi
+          # Kaggle's output layout may nest files; resolve by searching.
+          EVAL_RESULTS="$(find output/eval -name evaluation-results.json | head -1)"
+          if [ -z "$EVAL_RESULTS" ]; then echo "error: evaluation-results.json not found in eval kernel output"; exit 1; fi
+          echo "eval_results=$EVAL_RESULTS" >> "$GITHUB_OUTPUT"
+          if [ "$MODE" = "candidate" ]; then
+            ADAPTER_DIR="$(dirname "$(find output/adapter -name training_manifest.json | head -1)")"
+            if [ -z "$ADAPTER_DIR" ]; then echo "error: training_manifest.json not found in training kernel output"; exit 1; fi
+            echo "adapter_dir=$ADAPTER_DIR" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
+
+      - name: Record measured baseline
+        if: ${{ steps.advance.outputs.action == 'completed' && steps.advance.outputs.mode == 'base' }}
+        run: |
+          if python -c "import sys; sys.path.insert(0, 'src'); from src.evaluation.baseline import load_measured; sys.exit(0 if load_measured('evaluation/baseline_results.json') is None else 1)"; then
+            python scripts/record_baseline.py --evaluation "${{ steps.outputs.outputs.eval_results }}"
+          else
+            echo "baseline already measured; leaving it in place (re-measure locally with --force if intended)"
+          fi
+
+      - name: Resolve release versions
+        if: ${{ steps.advance.outputs.action == 'completed' && steps.advance.outputs.mode != 'base' }}
+        id: versions
+        run: |
+          python - <<'EOF'
+          import os, sys
+          sys.path.insert(0, 'scripts')
+          from evaluate_and_promote import _next_versions
+          from src.publishing.gate_decision import resolve_reference
+          _, kind, version = resolve_reference(
+              'evaluation/champion_results.json', 'evaluation/baseline_results.json')
+          release, model = _next_versions(version, kind)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"release_version={release}\nmodel_version={model}\n")
+          print(f"next release: {release} / {model} (reference: {kind} {version})")
+          EOF
+
+      - name: Build provenance and evaluate-and-promote
+        if: ${{ steps.advance.outputs.action == 'completed' && steps.advance.outputs.mode != 'base' }}
+        run: |
+          python scripts/build_provenance.py \
+            --adapter-dir "${{ steps.outputs.outputs.adapter_dir }}" \
+            --evaluation "${{ steps.outputs.outputs.eval_results }}" \
+            --release-version "${{ steps.versions.outputs.release_version }}" \
+            --output output/provenance.json
+          python scripts/evaluate_and_promote.py \
+            --evaluation "${{ steps.outputs.outputs.eval_results }}" \
+            --provenance output/provenance.json \
+            --adapter "${{ steps.outputs.outputs.adapter_dir }}" \
+            --release-version "${{ steps.versions.outputs.release_version }}" \
+            --model-version "${{ steps.versions.outputs.model_version }}"
+        env:
+          KAGGLE_TOKEN: ${{ secrets.KAGGLE_TOKEN }}
+
+      - name: Mark cycle done and commit records
+        if: ${{ steps.advance.outputs.action == 'completed' }}
+        run: |
+          python - <<'EOF'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          path = Path("evaluation/akarui-cycle.json")
+          state = json.loads(path.read_text())
+          state["phase"] = "done"
+          state["completed_at"] = datetime.now(timezone.utc).isoformat()
+          state["updated_at"] = state["completed_at"]
+          path.write_text(json.dumps(state, indent=2) + "\n")
+          print("cycle marked done")
+          EOF
+          git add releases/ evaluation/baseline_results.json evaluation/champion_results.json evaluation/akarui-cycle.json 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "chore: record weekly gate decision $(date -u +%Y-%m-%d)"
+          git push
