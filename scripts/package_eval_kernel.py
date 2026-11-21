@@ -1,7 +1,10 @@
 """Assemble a Kaggle eval kernel directory for Akarui candidates.
 
-Copies everything notebook ``07_evaluation.ipynb`` needs into one
-self-contained directory (default ``kernels/eval/``):
+Assembles the build inputs for notebook ``07_evaluation.ipynb`` in
+one directory (default ``kernels/eval/``). Only the notebook file
+itself is uploaded to Kaggle -- see the runtime contract below -- so
+the directory is a complete local record of what the kernel runs,
+not a bundle that travels with it:
 
 * ``07_evaluation.ipynb`` (the ``code_file`` in kernel-metadata.json)
 * ``kernel-metadata.json`` -- kernel slug
@@ -16,10 +19,21 @@ self-contained directory (default ``kernels/eval/``):
   solver that produces measured scores; ``scripts/kaggle_auth.py``
   is required because the solver downloads competition data with
   the Kaggle CLI in-kernel.
-* ``eval-mode.json`` -- ``{"mode": "candidate"|"base"}``, read by
-  the notebook to decide whether to evaluate the trained adapter
-  or the pinned base model
+* ``eval-mode.json`` -- ``{"mode": "candidate"|"base"}``, written
+  for local tooling. Nothing in-kernel may rely on it (see the
+  runtime contract below).
 * ``requirements-kaggle.txt``
+
+Runtime contract (run #7 failure, 2026-11-20): ``kaggle kernels
+push`` uploads ONLY the notebook file named as ``code_file`` in
+``kernel-metadata.json``. The copied ``src/``, ``scripts/``,
+``configs/``, ``evaluation/``, ``data/`` and ``eval-mode.json`` are
+build-time inputs only -- they never reach Kaggle, so the packaged
+notebook must be self-sufficient: its first code cell clones the
+public repo at runtime and runs from the clone, and
+:func:`_bake_mode` rewrites the ``mode = "candidate"`` default in
+the packaged notebook to the actual ``--mode`` value, since the
+notebook's ``eval-mode.json`` fallback cannot fire on Kaggle.
 
 Why a separate eval kernel (see evaluation/evaluation_protocol.md):
 the training kernel is already budgeted to ~10h of Kaggle's 12h
@@ -104,6 +118,84 @@ REQUIRED_FILES = [
     Path("requirements-kaggle.txt"),
 ]
 
+#: Marker comment for the self-bootstrap cell that must be the first
+#: code cell of the packaged notebook (see the runtime contract in
+#: the module docstring). The packager refuses a notebook without it.
+BOOTSTRAP_MARKER = "AKARUI_KERNEL_SELF_BOOTSTRAP"
+
+#: The mode default line in the source notebook. The packager rewrites
+#: it in the packaged copy to the actual --mode value; the line must
+#: occur exactly once in a code cell.
+MODE_DEFAULT_LINE = 'mode = "candidate"'
+
+
+def _notebook_cells(notebook_path: Path) -> dict:
+    """Load a notebook JSON file. Raises ValueError when unparseable."""
+    try:
+        return json.loads(notebook_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"refusing to package: cannot read notebook {notebook_path}: {exc}"
+        ) from exc
+
+
+def _write_notebook(notebook_path: Path, notebook: dict) -> None:
+    """Write a notebook JSON file in nbformat's 1-space indent."""
+    notebook_path.write_text(
+        json.dumps(notebook, indent=1, ensure_ascii=False) + "\n"
+    )
+
+
+def _verify_bootstrap_cell(notebook_path: Path) -> None:
+    """Refuse a packaged notebook without the self-bootstrap cell.
+
+    Without it the kernel would have no src/, scripts/, configs/,
+    evaluation/ or data/ at runtime (only the notebook file is
+    uploaded), and would fail at the first import or subprocess call.
+    """
+    notebook = _notebook_cells(notebook_path)
+    count = sum(
+        1
+        for cell in notebook.get("cells", [])
+        if cell.get("cell_type") == "code"
+        and BOOTSTRAP_MARKER in "".join(cell.get("source", []))
+    )
+    if count != 1:
+        raise ValueError(
+            f"refusing to package: expected exactly one self-bootstrap "
+            f"cell ({BOOTSTRAP_MARKER}) in {notebook_path}, found {count}"
+        )
+
+
+def _bake_mode(notebook_path: Path, mode: str) -> None:
+    """Rewrite the mode default in the packaged notebook to ``mode``.
+
+    The notebook reads ``eval-mode.json`` only when the file exists,
+    and that file never reaches Kaggle, so the packaged notebook must
+    carry the mode itself. Exactly one ``mode = "candidate"`` line
+    must exist in a code cell; anything else is a refusal, so a
+    silently wrong mode can never be packaged.
+    """
+    notebook = _notebook_cells(notebook_path)
+    replaced = 0
+    for cell in notebook.get("cells", []):
+        if cell.get("cell_type") != "code":
+            continue
+        source = cell.get("source", [])
+        lines = [source] if isinstance(source, str) else list(source)
+        for index, line in enumerate(lines):
+            if line.strip() == MODE_DEFAULT_LINE:
+                newline = "\n" if line.endswith("\n") else ""
+                lines[index] = f'mode = "{mode}"{newline}'
+                replaced += 1
+        cell["source"] = lines
+    if replaced != 1:
+        raise ValueError(
+            f"refusing to package: expected exactly one "
+            f"{MODE_DEFAULT_LINE!r} line in {notebook_path}, found {replaced}"
+        )
+    _write_notebook(notebook_path, notebook)
+
 
 def build_kernel(repo_root: Path, out_dir: Path, mode: str) -> dict:
     """Assemble the eval kernel directory. Returns a summary dict.
@@ -146,6 +238,11 @@ def build_kernel(repo_root: Path, out_dir: Path, mode: str) -> dict:
     out_dir.mkdir(parents=True)
 
     shutil.copy2(repo_root / NOTEBOOK_SRC, out_dir / NOTEBOOK_FILE)
+    # The packaged notebook must be self-sufficient on Kaggle (only
+    # this file is uploaded): refuse a notebook without the bootstrap
+    # cell, then bake the dispatched mode into it.
+    _verify_bootstrap_cell(out_dir / NOTEBOOK_FILE)
+    _bake_mode(out_dir / NOTEBOOK_FILE, mode)
     for dirname in ("src", "scripts", "configs", "evaluation"):
         shutil.copytree(
             repo_root / dirname,

@@ -546,3 +546,132 @@ def test_kernel_status_error_names_the_raw_output(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(trigger_kaggle.time, "sleep", lambda _: None)
     with pytest.raises(RuntimeError, match="unexpected response"):
         trigger_kaggle.kernel_status("monibeefudgekins/akarui-eval-baseline")
+
+
+# --- self-bootstrap + baked mode (run #7 failure, 2026-11-20) ---------
+# `kaggle kernels push` uploads ONLY the notebook file named as
+# code_file, so the packaged notebook must clone the public repo at
+# runtime and carry its mode baked in. These tests pin that.
+
+
+def _packaged_notebook(out: Path, filename: str) -> dict:
+    return json.loads((out / filename).read_text())
+
+
+def _mode_lines(notebook: dict) -> list[str]:
+    return [
+        line.strip()
+        for cell in notebook.get("cells", [])
+        if cell.get("cell_type") == "code"
+        for line in cell.get("source", [])
+        if line.strip().startswith('mode = "')
+    ]
+
+
+def _bootstrap_cells(notebook: dict, marker: str) -> list[dict]:
+    return [
+        cell
+        for cell in notebook.get("cells", [])
+        if cell.get("cell_type") == "code"
+        and marker in "".join(cell.get("source", []))
+    ]
+
+
+def test_eval_package_bakes_mode_base(tmp_path: Path):
+    repo = _minimal_eval_repo(tmp_path)
+    out = tmp_path / "eval-base"
+    package_eval_kernel.build_kernel(repo, out, "base")
+    notebook = _packaged_notebook(out, "07_evaluation.ipynb")
+    assert _mode_lines(notebook) == ['mode = "base"']
+    assert len(_bootstrap_cells(
+        notebook, package_eval_kernel.BOOTSTRAP_MARKER)) == 1
+    assert json.loads((out / "eval-mode.json").read_text())["mode"] == "base"
+
+
+def test_eval_package_bakes_mode_candidate(tmp_path: Path):
+    repo = _minimal_eval_repo(tmp_path)
+    out = tmp_path / "eval-candidate"
+    package_eval_kernel.build_kernel(repo, out, "candidate")
+    notebook = _packaged_notebook(out, "07_evaluation.ipynb")
+    assert _mode_lines(notebook) == ['mode = "candidate"']
+    assert len(_bootstrap_cells(
+        notebook, package_eval_kernel.BOOTSTRAP_MARKER)) == 1
+    assert (
+        json.loads((out / "eval-mode.json").read_text())["mode"] == "candidate"
+    )
+
+
+def test_eval_package_refuses_notebook_without_mode_line(tmp_path: Path):
+    repo = _minimal_eval_repo(tmp_path)
+    notebook_path = repo / "notebooks" / "07_evaluation.ipynb"
+    notebook = json.loads(notebook_path.read_text())
+    for cell in notebook["cells"]:
+        if cell.get("cell_type") != "code":
+            continue
+        cell["source"] = [
+            line for line in cell.get("source", [])
+            if line.strip() != 'mode = "candidate"'
+        ]
+    notebook_path.write_text(json.dumps(notebook, indent=1) + "\n")
+    with pytest.raises(ValueError, match="exactly one"):
+        package_eval_kernel.build_kernel(repo, tmp_path / "eval", "base")
+
+
+def test_eval_package_refuses_notebook_with_duplicate_mode_line(tmp_path: Path):
+    repo = _minimal_eval_repo(tmp_path)
+    notebook_path = repo / "notebooks" / "07_evaluation.ipynb"
+    notebook = json.loads(notebook_path.read_text())
+    done = False
+    for cell in notebook["cells"]:
+        if done or cell.get("cell_type") != "code":
+            continue
+        source = cell.get("source", [])
+        for index, line in enumerate(source):
+            if line.strip() == 'mode = "candidate"':
+                source.insert(index + 1, 'mode = "candidate"\n')
+                done = True
+                break
+    assert done
+    notebook_path.write_text(json.dumps(notebook, indent=1) + "\n")
+    with pytest.raises(ValueError, match="exactly one"):
+        package_eval_kernel.build_kernel(repo, tmp_path / "eval", "base")
+
+
+def test_sft_package_contains_bootstrap_cell(tmp_path: Path):
+    repo = _minimal_repo(tmp_path, train_lines=_jsonl(VALID_RECORDS))
+    out = tmp_path / "kernel"
+    package_kernel.build_kernel(repo, out)
+    notebook = _packaged_notebook(out, "05_sft_training.ipynb")
+    assert len(_bootstrap_cells(
+        notebook, package_kernel.BOOTSTRAP_MARKER)) == 1
+    # The training notebook has no mode: nothing to bake, and the
+    # packager must not invent one.
+    assert _mode_lines(notebook) == []
+
+
+def test_sft_package_refuses_notebook_without_bootstrap_cell(tmp_path: Path):
+    repo = _minimal_repo(tmp_path, train_lines=_jsonl(VALID_RECORDS))
+    notebook_path = repo / "notebooks" / "05_sft_training.ipynb"
+    notebook = json.loads(notebook_path.read_text())
+    notebook["cells"] = [
+        cell for cell in notebook["cells"]
+        if package_kernel.BOOTSTRAP_MARKER
+        not in "".join(cell.get("source", []))
+    ]
+    notebook_path.write_text(json.dumps(notebook, indent=1) + "\n")
+    with pytest.raises(ValueError, match="self-bootstrap"):
+        package_kernel.build_kernel(repo, tmp_path / "kernel")
+
+
+def test_eval_package_refuses_notebook_without_bootstrap_cell(tmp_path: Path):
+    repo = _minimal_eval_repo(tmp_path)
+    notebook_path = repo / "notebooks" / "07_evaluation.ipynb"
+    notebook = json.loads(notebook_path.read_text())
+    notebook["cells"] = [
+        cell for cell in notebook["cells"]
+        if package_eval_kernel.BOOTSTRAP_MARKER
+        not in "".join(cell.get("source", []))
+    ]
+    notebook_path.write_text(json.dumps(notebook, indent=1) + "\n")
+    with pytest.raises(ValueError, match="self-bootstrap"):
+        package_eval_kernel.build_kernel(repo, tmp_path / "eval", "base")

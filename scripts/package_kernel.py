@@ -1,7 +1,10 @@
 """Assemble a Kaggle kernel directory for SFT training.
 
-Copies everything notebook ``05_sft_training.ipynb`` needs into one
-self-contained directory (default ``kernels/sft/``):
+Assembles the build inputs for notebook ``05_sft_training.ipynb``
+in one directory (default ``kernels/sft/``). Only the notebook file
+itself is uploaded to Kaggle -- see the runtime contract below -- so
+the directory is a complete local record of what the kernel runs,
+not a bundle that travels with it:
 
 * ``05_sft_training.ipynb`` (the ``code_file`` in kernel-metadata.json)
 * ``kernel-metadata.json`` -- kernel slug
@@ -12,6 +15,17 @@ self-contained directory (default ``kernels/sft/``):
   notebook imports or shells out to)
 * ``data/train.jsonl`` (the training file the configs point at)
 * ``requirements-kaggle.txt`` (reference for the Kaggle environment)
+
+Runtime contract (eval run #7 failure, 2026-11-20): ``kaggle kernels
+push`` uploads ONLY the notebook file named as ``code_file`` in
+``kernel-metadata.json``. The copied ``src/``, ``scripts/``,
+``configs/`` and ``data/`` are build-time inputs only -- they never
+reach Kaggle, so the packaged notebook must be self-sufficient: its
+first code cell clones the public repo at runtime and runs from the
+clone. :func:`_verify_bootstrap_cell` refuses a notebook without
+that cell. This kernel has no mode: unlike the eval kernel there is
+no ``mode = "candidate"`` line to bake (the training notebook does
+not branch on mode), so no mode baking is done here.
 
 Refusal rules (exit 1, no partial directory left behind):
 
@@ -98,6 +112,37 @@ REQUIRED_FILES = [
     Path("configs/sft.yaml"),
     Path("requirements-kaggle.txt"),
 ]
+
+#: Marker comment for the self-bootstrap cell that must be the first
+#: code cell of the packaged notebook (see the runtime contract in
+#: the module docstring). The packager refuses a notebook without it.
+BOOTSTRAP_MARKER = "AKARUI_KERNEL_SELF_BOOTSTRAP"
+
+
+def _verify_bootstrap_cell(notebook_path: Path) -> None:
+    """Refuse a packaged notebook without the self-bootstrap cell.
+
+    Without it the kernel would have no src/, scripts/, configs/ or
+    data/ at runtime (only the notebook file is uploaded), and would
+    fail at the first import or subprocess call.
+    """
+    try:
+        notebook = json.loads(notebook_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"refusing to package: cannot read notebook {notebook_path}: {exc}"
+        ) from exc
+    count = sum(
+        1
+        for cell in notebook.get("cells", [])
+        if cell.get("cell_type") == "code"
+        and BOOTSTRAP_MARKER in "".join(cell.get("source", []))
+    )
+    if count != 1:
+        raise ValueError(
+            f"refusing to package: expected exactly one self-bootstrap "
+            f"cell ({BOOTSTRAP_MARKER}) in {notebook_path}, found {count}"
+        )
 
 
 def load_held_out(repo_root: Path) -> set[str]:
@@ -247,6 +292,10 @@ def build_kernel(repo_root: Path, out_dir: Path) -> dict:
     (out_dir / "data").mkdir(parents=True)
 
     shutil.copy2(repo_root / NOTEBOOK_SRC, out_dir / NOTEBOOK_FILE)
+    # The packaged notebook must be self-sufficient on Kaggle (only
+    # this file is uploaded): refuse a notebook without the bootstrap
+    # cell.
+    _verify_bootstrap_cell(out_dir / NOTEBOOK_FILE)
     for dirname in ("src", "scripts", "configs"):
         shutil.copytree(
             repo_root / dirname,
