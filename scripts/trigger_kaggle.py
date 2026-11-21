@@ -25,6 +25,17 @@ Two exceptions to failure:
   ``data/train.jsonl`` is missing or invalid). Pass ``--no-package``
   to disable this and fail instead.
 
+Submit-only mode (``--submit-only``): push the kernel and confirm it
+started (queued/running) instead of waiting for completion. The run
+record then carries ``status: "submitted"`` and the script exits 0.
+The weekly workflow uses this mode: holding a GitHub runner while a
+~10h kernel trains burns the whole job (the old flow sat polling up
+to the 6h job cap and was killed mid-poll, so the promote step never
+ran). A separate check workflow (``.github/workflows/check-training.yml``,
+driven by ``scripts/advance_cycle.py``) collects the result. The
+quota-skip behaviour is identical in submit-only mode: a refused push
+or a kernel that errors on quota records ``skipped_quota`` and exits 0.
+
 The Kaggle CLI (``kaggle``) must be installed and the notebook directory
 must contain the notebook plus its ``kernel-metadata.json``.
 """
@@ -48,6 +59,14 @@ DEFAULT_NOTEBOOK_DIR = "kernels/sft"
 DEFAULT_KERNEL = "monibeefudgekins/akarui-sft-training"
 DEFAULT_TIMEOUT_MINUTES = 720
 POLL_INTERVAL_SECONDS = 300
+
+#: How often the submit-only confirmation re-checks the kernel status.
+CONFIRM_INTERVAL_SECONDS = 60
+#: How long the submit-only confirmation waits for the kernel to show
+#: queued/running before reporting the start as confirmed. The kernel
+#: is normally queued within a minute of the push; the window only
+#: covers a slow Kaggle start, never the training itself.
+DEFAULT_CONFIRM_MINUTES = 10
 
 #: Substrings (lowercased) in push output that mean the weekly GPU
 #: quota is exhausted. Kaggle's message is "Maximum weekly GPU quota
@@ -221,6 +240,41 @@ def wait_for_completion(kernel: str, timeout_minutes: int) -> str:
         time.sleep(min(POLL_INTERVAL_SECONDS, max(0, deadline - time.monotonic())))
 
 
+def confirm_started(
+    kernel: str, confirm_minutes: int = DEFAULT_CONFIRM_MINUTES
+) -> str:
+    """Confirm a freshly pushed kernel started, without waiting for it.
+
+    Polls :func:`kernel_status` every ``CONFIRM_INTERVAL_SECONDS`` for
+    up to ``confirm_minutes``. Returns ``"submitted"`` once the kernel
+    is queued or running, ``"complete"`` if it finished improbably
+    fast, or the error status (``"error"`` / ``"cancelled"``) when it
+    failed outright. A kernel that errors because the weekly GPU quota
+    is exhausted raises QuotaExceededError (a skip, not a failure).
+    A kernel still queued or running when the window elapses is
+    ``"submitted"``: the start is confirmed and the wait belongs to
+    the check workflow, not this run.
+    """
+    deadline = time.monotonic() + confirm_minutes * 60
+    while True:
+        status = kernel_status(kernel)
+        print(f"Kernel {kernel}: {status}")
+        if status in ("complete", "error", "cancelled"):
+            if status == "error":
+                message = kernel_failure_message(kernel)
+                if message:
+                    print(f"Kernel failure message: {message}")
+                if is_quota_failure(message):
+                    raise QuotaExceededError(
+                        "kernel errored: weekly GPU quota exhausted: "
+                        f"{message}"
+                    )
+            return status
+        if time.monotonic() >= deadline:
+            return "submitted"
+        time.sleep(min(CONFIRM_INTERVAL_SECONDS, max(0, deadline - time.monotonic())))
+
+
 def _write_run_record(path: Path, record: dict) -> None:
     """Write a run record JSON, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,7 +282,7 @@ def _write_run_record(path: Path, record: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point. Returns 0 on completion or a quota skip."""
+    """CLI entry point. Returns 0 on completion, submission, or a quota skip."""
     parser = argparse.ArgumentParser(
         description="Submit the Kaggle training notebook and wait for it."
     )
@@ -259,6 +313,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Max minutes to wait for completion",
     )
     parser.add_argument(
+        "--submit-only",
+        action="store_true",
+        help="Push the kernel and confirm it started (queued/running) "
+        "instead of waiting for completion; exit 0 once the start is "
+        "confirmed. The weekly workflow uses this; a separate check "
+        "workflow collects the result.",
+    )
+    parser.add_argument(
         "--run-record",
         default="output/kaggle-run.json",
         help="Where to write the run record JSON",
@@ -273,7 +335,10 @@ def main(argv: list[str] | None = None) -> int:
         auth = configure_kaggle_auth()
         print(f"Kaggle auth configured via {auth['method']}")
         push_kernel(Path(args.notebook_dir))
-        final_status = wait_for_completion(args.kernel, args.timeout_minutes)
+        if args.submit_only:
+            final_status = confirm_started(args.kernel)
+        else:
+            final_status = wait_for_completion(args.kernel, args.timeout_minutes)
     except QuotaExceededError as exc:
         # The run never started: record the skip and exit 0. This is
         # not a success -- no model was produced -- and not a failure
@@ -307,6 +372,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if final_status == "complete":
         print(f"Training kernel completed: {args.kernel}")
+        return 0
+    if final_status == "submitted":
+        print(f"Training kernel submitted and running: {args.kernel}")
         return 0
     print(
         f"Training kernel did NOT complete (status: {final_status}). "
