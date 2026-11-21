@@ -241,20 +241,24 @@ def wait_for_completion(kernel: str, timeout_minutes: int) -> str:
 
 
 def confirm_started(
-    kernel: str, confirm_minutes: int = DEFAULT_CONFIRM_MINUTES
+    kernel: str, confirm_minutes: int | None = None
 ) -> str:
     """Confirm a freshly pushed kernel started, without waiting for it.
 
     Polls :func:`kernel_status` every ``CONFIRM_INTERVAL_SECONDS`` for
-    up to ``confirm_minutes``. Returns ``"submitted"`` once the kernel
-    is queued or running, ``"complete"`` if it finished improbably
-    fast, or the error status (``"error"`` / ``"cancelled"``) when it
-    failed outright. A kernel that errors because the weekly GPU quota
-    is exhausted raises QuotaExceededError (a skip, not a failure).
+    up to ``confirm_minutes`` (default: ``DEFAULT_CONFIRM_MINUTES``,
+    resolved at call time so the module constant stays configurable).
+    Returns ``"submitted"`` once the kernel is queued or running,
+    ``"complete"`` if it finished improbably fast, or the error status
+    (``"error"`` / ``"cancelled"``) when it failed outright. A kernel
+    that errors because the weekly GPU quota is exhausted raises
+    QuotaExceededError (a skip, not a failure).
     A kernel still queued or running when the window elapses is
     ``"submitted"``: the start is confirmed and the wait belongs to
     the check workflow, not this run.
     """
+    if confirm_minutes is None:
+        confirm_minutes = DEFAULT_CONFIRM_MINUTES
     deadline = time.monotonic() + confirm_minutes * 60
     while True:
         status = kernel_status(kernel)
