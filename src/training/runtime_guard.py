@@ -29,6 +29,16 @@ Arithmetic for the SFT defaults (``max_steps=600`` in
     total = 1.0h setup + 8.33h training = 9.33h
     margin = 11h cap - 9.33h = 1.67h (2.67h under Kaggle's 12h kill)
 
+DPO and GRPO share the same 10h / 1h budget and the same 600-step
+cap, sized from the same (borrowed, unmeasured) 50 s/step
+assumption. Their steps are expected to be slower than SFT steps --
+DPO runs a chosen and a rejected pass per step, GRPO generates
+``num_generations`` completions and executes them per step -- so for
+them the wall-clock guard is the binding limit and the step cap is a
+backstop, not the primary bound. A run that hits the wall clock stops
+gracefully with a checkpoint and a partial-complete record instead of
+being killed.
+
 At a faster 25 s/step the same 600 steps take 4.17h. The step cap is
 an upper bound, not a target: a run whose epoch ends first simply
 finishes early, and a run that hits the wall-clock guard stops
@@ -202,3 +212,40 @@ def steps_for_budget(max_runtime_hours: float, setup_allowance_hours: float) -> 
     """Largest step cap that fits the hour budget at the worst rate."""
     budget_seconds = (max_runtime_hours - setup_allowance_hours) * 3600
     return max(0, math.floor(budget_seconds / ASSUMED_WORST_STEP_SECONDS))
+
+
+def runtime_guard_callback(guard: RuntimeGuard, logger=None):
+    """Build the wall-clock stop callback for a TRL trainer.
+
+    Checked after every optimizer step: once the guard's deadline is
+    reached, the run is stopped gracefully (``should_training_stop``)
+    so the trainer saves a checkpoint instead of Kaggle killing the
+    notebook at 12h. The returned callback instance carries a
+    ``triggered`` attribute, True once it has stopped a run -- the
+    stage runner uses it to write the partial-complete record.
+
+    The ``transformers`` import is lazy so this module stays
+    importable without the training stack; callers pass the callback
+    instance to the trainer's ``callbacks=`` argument. All three
+    stages (SFT, DPO, GRPO) share this one implementation so the stop
+    logic cannot drift between them.
+    """
+    from transformers import TrainerCallback
+
+    class _RuntimeGuardCallback(TrainerCallback):
+        def __init__(self) -> None:
+            self.triggered = False
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if guard.exceeded():
+                self.triggered = True
+                if logger is not None:
+                    logger.warning(
+                        "runtime guard: %.2fh wall clock reached at step %d; "
+                        "stopping gracefully with a checkpoint",
+                        guard.elapsed_seconds() / 3600,
+                        state.global_step,
+                    )
+                control.should_training_stop = True
+
+    return _RuntimeGuardCallback()

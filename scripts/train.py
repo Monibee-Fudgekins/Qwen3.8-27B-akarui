@@ -156,8 +156,9 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    # A partial-complete SFT run (wall-clock guard) still exits 0: the
+    # A partial-complete run (wall-clock guard) still exits 0: the
     # adapter + checkpoint were saved deliberately, not lost to a kill.
+    # This applies to every stage (SFT, DPO, GRPO).
     if isinstance(summary, dict) and summary.get("status"):
         print(
             f"Training finished with status={summary['status']} "

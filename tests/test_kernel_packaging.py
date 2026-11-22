@@ -407,6 +407,50 @@ def test_prepare_plan_includes_runtime_guard():
     assert plan["strategy"]["strategy"] == "unresolved"
 
 
+def test_runtime_guard_defaults_match_dpo_config():
+    import prepare_training
+
+    config = prepare_training.load_config(ROOT / "configs" / "dpo.yaml")
+    guard = resolve_runtime_guard(config)
+    assert guard["max_runtime_hours"] == 10.0
+    assert guard["max_steps"] == 600
+    # Same budget arithmetic as SFT: 600 steps x 50 s/step = 8.33h
+    # training + 1h setup = 9.33h total, 1.67h margin under the 11h
+    # cap. The 50 s/step rate is borrowed from Glimmer and unmeasured
+    # for Akarui; a DPO step is expected to be slower than an SFT
+    # step, so the wall-clock guard is the binding limit here.
+    assert guard["estimated_total_hours"] == pytest.approx(9.33, abs=0.01)
+    assert guard["margin_hours_under_cap"] == pytest.approx(1.67, abs=0.01)
+    assert guard["steps_at_worst_rate"] == 648
+
+
+def test_runtime_guard_defaults_match_grpo_config():
+    import prepare_training
+
+    config = prepare_training.load_config(ROOT / "configs" / "grpo.yaml")
+    guard = resolve_runtime_guard(config)
+    assert guard["max_runtime_hours"] == 10.0
+    assert guard["max_steps"] == 600
+    # Same budget arithmetic as SFT. A GRPO step generates
+    # num_generations completions and executes them for reward, so it
+    # is expected to be much slower than an SFT step; the wall-clock
+    # guard is the binding limit here.
+    assert guard["estimated_total_hours"] == pytest.approx(9.33, abs=0.01)
+    assert guard["margin_hours_under_cap"] == pytest.approx(1.67, abs=0.01)
+    assert guard["steps_at_worst_rate"] == 648
+
+
+def test_prepare_plan_includes_runtime_guard_for_dpo_and_grpo():
+    import prepare_training
+
+    for stage in ("dpo", "grpo"):
+        plan = prepare_training.build_plan(
+            ROOT / "configs" / f"{stage}.yaml", allow_no_gpu=True
+        )
+        assert plan["runtime_guard"]["max_runtime_hours"] == 10.0
+        assert plan["runtime_guard"]["max_steps"] == 600
+
+
 # --- Kaggle kernel title length -----------------------------------------
 # The SaveKernel API rejects titles over 50 chars with HTTP 400
 # ("The title cannot exceed 50 characters."). Seen live 2026-11-18:

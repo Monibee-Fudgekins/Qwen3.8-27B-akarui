@@ -119,6 +119,129 @@ def test_grpo_disabled_gate_raises_before_heavy_import():
         )
 
 
+def test_dpo_and_grpo_configs_carry_step_caps():
+    import prepare_training
+
+    dpo = prepare_training.load_config(ROOT / "configs" / "dpo.yaml")
+    assert dpo["training"]["max_steps"] == 600
+    assert dpo["runtime"]["max_runtime_hours"] == 10.0
+    assert dpo["runtime"]["setup_allowance_hours"] == 1.0
+
+    grpo = prepare_training.load_config(ROOT / "configs" / "grpo.yaml")
+    assert grpo["training"]["max_steps"] == 600
+    assert grpo["runtime"]["max_runtime_hours"] == 10.0
+    assert grpo["runtime"]["setup_allowance_hours"] == 1.0
+
+
+def test_runtime_guard_callback_stops_training_at_deadline(monkeypatch):
+    import sys
+    import time
+    import types
+
+    from src.training.runtime_guard import RuntimeGuard, runtime_guard_callback
+
+    # The training stack is not installed in the test env; stub just
+    # enough of transformers for the callback factory to build.
+    fake_transformers = types.ModuleType("transformers")
+
+    class TrainerCallback:
+        pass
+
+    fake_transformers.TrainerCallback = TrainerCallback
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    class _State:
+        global_step = 42
+
+    class _Control:
+        should_training_stop = False
+
+    # Fresh guard: deadline 10h away, training continues.
+    guard = RuntimeGuard(10.0)
+    callback = runtime_guard_callback(guard)
+    control = _Control()
+    callback.on_step_end(None, _State(), control)
+    assert control.should_training_stop is False
+    assert callback.triggered is False
+
+    # Expired guard: deadline already passed, training stops.
+    expired = RuntimeGuard(10.0, start=time.monotonic() - 10 * 3600 - 60)
+    callback = runtime_guard_callback(expired)
+    control = _Control()
+    callback.on_step_end(None, _State(), control)
+    assert control.should_training_stop is True
+    assert callback.triggered is True
+
+
+def test_run_dpo_rejects_over_cap_guard_before_heavy_import(tmp_path: Path):
+    from src.training.dpo import run_dpo
+
+    config = {
+        "runtime": {"max_runtime_hours": 12.0, "setup_allowance_hours": 1.0},
+        "training": {"max_steps": 600},
+        "dpo": {"beta": 0.1},
+    }
+    # The preference file need not exist: the guard is resolved
+    # before any pair is loaded or any training library is imported.
+    with pytest.raises(ValueError, match="max_runtime_hours"):
+        run_dpo(config, tmp_path / "pairs.jsonl", tmp_path / "out")
+
+
+def test_run_dpo_rejects_step_cap_over_budget(tmp_path: Path):
+    from src.training.dpo import run_dpo
+
+    config = {
+        "runtime": {"max_runtime_hours": 10.0, "setup_allowance_hours": 1.0},
+        "training": {"max_steps": 700},
+        "dpo": {"beta": 0.1},
+    }
+    with pytest.raises(ValueError, match="max_steps"):
+        run_dpo(config, tmp_path / "pairs.jsonl", tmp_path / "out")
+
+
+def test_run_dpo_valid_guard_reaches_heavy_import(tmp_path: Path):
+    from src.training.dpo import run_dpo
+
+    config = {
+        "runtime": {"max_runtime_hours": 10.0, "setup_allowance_hours": 1.0},
+        "training": {"max_steps": 600},
+        "dpo": {"beta": 0.1},
+    }
+    # A valid guard passes validation; the run then fails on the
+    # missing training stack (datasets/trl are not installed in the
+    # test env), proving the guard was resolved first.
+    with pytest.raises(ImportError, match="datasets"):
+        run_dpo(config, tmp_path / "pairs.jsonl", tmp_path / "out")
+
+
+def test_run_grpo_rejects_over_cap_guard_before_heavy_import(tmp_path: Path):
+    from src.training.grpo import run_grpo
+
+    config = {
+        "grpo": {"enabled": True},
+        "runtime": {"max_runtime_hours": 12.0, "setup_allowance_hours": 1.0},
+        "training": {"max_steps": 600},
+    }
+    # The tasks file need not exist: the enabled check passes, then
+    # the guard is resolved before any training library is imported.
+    with pytest.raises(ValueError, match="max_runtime_hours"):
+        run_grpo(config, tmp_path / "tasks.jsonl", tmp_path / "out")
+
+
+def test_run_grpo_valid_guard_reaches_heavy_import(tmp_path: Path):
+    from src.training.grpo import run_grpo
+
+    config = {
+        "grpo": {"enabled": True},
+        "runtime": {"max_runtime_hours": 10.0, "setup_allowance_hours": 1.0},
+        "training": {"max_steps": 600},
+    }
+    # A valid guard passes validation; the run then fails on the
+    # missing training stack, proving the guard was resolved first.
+    with pytest.raises(ImportError, match="datasets"):
+        run_grpo(config, tmp_path / "tasks.jsonl", tmp_path / "out")
+
+
 def test_checkpoint_find_and_prune(tmp_path: Path):
     output_dir = tmp_path / "output"
     for step in (100, 200, 300, 400, 500):

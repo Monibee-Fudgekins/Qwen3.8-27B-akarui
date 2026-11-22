@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .checkpointing import write_training_manifest
 from .model_loader import get_lora_config, load_base_model, load_tokenizer
-from .runtime_guard import RuntimeGuard, resolve_runtime_guard
+from .runtime_guard import RuntimeGuard, resolve_runtime_guard, runtime_guard_callback
 from .trainer_utils import (
     format_messages_for_training,
     get_device_info,
@@ -180,21 +180,7 @@ def run_sft(
 
     # Wall-clock callback: checked after every optimizer step. The
     # import is lazy so this module stays importable without torch.
-    from transformers import TrainerCallback
-
-    guard_state = {"triggered": False}
-
-    class _RuntimeGuardCallback(TrainerCallback):
-        def on_step_end(self, args, state, control, **kwargs):
-            if guard.exceeded():
-                guard_state["triggered"] = True
-                logger.warning(
-                    "runtime guard: %.2fh wall clock reached at step %d; "
-                    "stopping gracefully with a checkpoint",
-                    guard.elapsed_seconds() / 3600,
-                    state.global_step,
-                )
-                control.should_training_stop = True
+    guard_callback = runtime_guard_callback(guard, logger)
 
     trainer = SFTTrainer(
         model=model,
@@ -202,7 +188,7 @@ def run_sft(
         train_dataset=dataset,
         processing_class=tokenizer,
         peft_config=lora_config,
-        callbacks=[_RuntimeGuardCallback()],
+        callbacks=[guard_callback],
     )
     trainer.train(resume_from_checkpoint=str(resume_from) if resume_from else None)
     trainer.save_model(str(output_dir))
@@ -210,7 +196,7 @@ def run_sft(
 
     steps_completed = trainer.state.global_step
     elapsed_hours = guard.elapsed_seconds() / 3600
-    stopped_early = bool(guard_state["triggered"])
+    stopped_early = bool(guard_callback.triggered)
     status = "partial_complete" if stopped_early else "complete"
     checkpoint_dir: Path | None = None
     if stopped_early:

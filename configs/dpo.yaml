@@ -23,6 +23,17 @@ training:
   gradient_accumulation_steps: 4
   max_seq_length: 4096
   num_train_epochs: 1
+  # Step cap sized from the 10h wall-clock budget, same arithmetic as
+  # SFT (see src/training/runtime_guard.py): 600 steps x worst-case
+  # 50 s/step = 8.33h training + 1h setup = 9.33h, 1.67h of margin
+  # under the 11h effective cap. The 50 s/step rate is borrowed from
+  # the sibling Glimmer kernel and is UNMEASURED for Akarui -- and a
+  # DPO step runs a chosen and a rejected pass, so it is expected to
+  # be slower than an SFT step. The wall-clock guard is therefore the
+  # binding limit for DPO; the step cap is a backstop, not the
+  # primary bound. A run whose epoch ends first finishes early, and
+  # the guard stops a slow run gracefully instead of a kill.
+  max_steps: 600
   bf16: true
   gradient_checkpointing: true
   optim: adamw_bnb_8bit
