@@ -1,0 +1,9 @@
+{
+  "cycle": "2026-11-22",
+  "mode": "base",
+  "phase": "eval",
+  "train_kernel": "monibeefudgekins/akarui-sft-training",
+  "eval_kernel": "monibeefudgekins/akarui-eval-baseline",
+  "dispatched_at": "2026-11-22T05:07:57.787500+00:00",
+  "updated_at": "2026-11-22T05:07:57.787500+00:00"
+}
