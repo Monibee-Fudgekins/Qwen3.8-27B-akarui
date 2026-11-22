@@ -123,6 +123,12 @@ REQUIRED_FILES = [
 #: the module docstring). The packager refuses a notebook without it.
 BOOTSTRAP_MARKER = "AKARUI_KERNEL_SELF_BOOTSTRAP"
 
+#: Marker comment for the dependency-install cell. The packager refuses
+#: a notebook without it: the Kaggle image lacks bitsandbytes, so a
+#: 4-bit model load fails unless the kernel installs
+#: requirements-kaggle.txt itself (run #8, 2026-11-21).
+INSTALL_MARKER = "AKARUI_KERNEL_INSTALL_REQUIREMENTS"
+
 #: The mode default line in the source notebook. The packager rewrites
 #: it in the packaged copy to the actual --mode value; the line must
 #: occur exactly once in a code cell.
@@ -164,6 +170,27 @@ def _verify_bootstrap_cell(notebook_path: Path) -> None:
         raise ValueError(
             f"refusing to package: expected exactly one self-bootstrap "
             f"cell ({BOOTSTRAP_MARKER}) in {notebook_path}, found {count}"
+        )
+
+
+def _verify_install_cell(notebook_path: Path) -> None:
+    """Refuse a packaged notebook without the dependency-install cell.
+
+    Without it the kernel would fail at the first 4-bit model load:
+    the Kaggle image ships torch/transformers but not bitsandbytes
+    (run #8, 2026-11-21).
+    """
+    notebook = _notebook_cells(notebook_path)
+    count = sum(
+        1
+        for cell in notebook.get("cells", [])
+        if cell.get("cell_type") == "code"
+        and INSTALL_MARKER in "".join(cell.get("source", []))
+    )
+    if count != 1:
+        raise ValueError(
+            f"refusing to package: expected exactly one dependency-install "
+            f"cell ({INSTALL_MARKER}) in {notebook_path}, found {count}"
         )
 
 
@@ -240,8 +267,10 @@ def build_kernel(repo_root: Path, out_dir: Path, mode: str) -> dict:
     shutil.copy2(repo_root / NOTEBOOK_SRC, out_dir / NOTEBOOK_FILE)
     # The packaged notebook must be self-sufficient on Kaggle (only
     # this file is uploaded): refuse a notebook without the bootstrap
-    # cell, then bake the dispatched mode into it.
+    # cell or the dependency-install cell, then bake the dispatched
+    # mode into it.
     _verify_bootstrap_cell(out_dir / NOTEBOOK_FILE)
+    _verify_install_cell(out_dir / NOTEBOOK_FILE)
     _bake_mode(out_dir / NOTEBOOK_FILE, mode)
     for dirname in ("src", "scripts", "configs", "evaluation"):
         shutil.copytree(

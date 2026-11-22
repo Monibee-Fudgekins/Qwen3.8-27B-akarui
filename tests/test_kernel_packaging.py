@@ -675,3 +675,55 @@ def test_eval_package_refuses_notebook_without_bootstrap_cell(tmp_path: Path):
     notebook_path.write_text(json.dumps(notebook, indent=1) + "\n")
     with pytest.raises(ValueError, match="self-bootstrap"):
         package_eval_kernel.build_kernel(repo, tmp_path / "eval", "base")
+
+
+# --- dependency-install cell (run #8 failure, 2026-11-21) ---------------
+# The Kaggle image lacks bitsandbytes, so a 4-bit model load fails with
+# ImportError unless the kernel installs requirements-kaggle.txt
+# itself. These tests pin that cell in both packaged notebooks.
+
+
+def test_sft_package_contains_install_cell(tmp_path: Path):
+    repo = _minimal_repo(tmp_path, train_lines=_jsonl(VALID_RECORDS))
+    out = tmp_path / "kernel"
+    package_kernel.build_kernel(repo, out)
+    notebook = _packaged_notebook(out, "05_sft_training.ipynb")
+    assert len(_bootstrap_cells(
+        notebook, package_kernel.INSTALL_MARKER)) == 1
+
+
+def test_eval_package_contains_install_cell(tmp_path: Path):
+    repo = _minimal_eval_repo(tmp_path)
+    out = tmp_path / "eval-base"
+    package_eval_kernel.build_kernel(repo, out, "base")
+    notebook = _packaged_notebook(out, "07_evaluation.ipynb")
+    assert len(_bootstrap_cells(
+        notebook, package_eval_kernel.INSTALL_MARKER)) == 1
+
+
+def test_sft_package_refuses_notebook_without_install_cell(tmp_path: Path):
+    repo = _minimal_repo(tmp_path, train_lines=_jsonl(VALID_RECORDS))
+    notebook_path = repo / "notebooks" / "05_sft_training.ipynb"
+    notebook = json.loads(notebook_path.read_text())
+    notebook["cells"] = [
+        cell for cell in notebook["cells"]
+        if package_kernel.INSTALL_MARKER
+        not in "".join(cell.get("source", []))
+    ]
+    notebook_path.write_text(json.dumps(notebook, indent=1) + "\n")
+    with pytest.raises(ValueError, match="dependency-install"):
+        package_kernel.build_kernel(repo, tmp_path / "kernel")
+
+
+def test_eval_package_refuses_notebook_without_install_cell(tmp_path: Path):
+    repo = _minimal_eval_repo(tmp_path)
+    notebook_path = repo / "notebooks" / "07_evaluation.ipynb"
+    notebook = json.loads(notebook_path.read_text())
+    notebook["cells"] = [
+        cell for cell in notebook["cells"]
+        if package_eval_kernel.INSTALL_MARKER
+        not in "".join(cell.get("source", []))
+    ]
+    notebook_path.write_text(json.dumps(notebook, indent=1) + "\n")
+    with pytest.raises(ValueError, match="dependency-install"):
+        package_eval_kernel.build_kernel(repo, tmp_path / "eval", "base")
