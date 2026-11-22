@@ -7,6 +7,14 @@ variation version.
 
 ## [Unreleased]
 
+- transformers 4.57.0 -> 5.2.0 (both requirements files): 5.2.0 is the
+  first release supporting model_type `qwen3_5` (verified against the
+  5.1.0/5.2.0 tags: 5.1.0 has no qwen3_5 model, 5.2.0 does). The
+  base-mode eval kernel v6 failed at model load with
+  `KeyError: 'qwen3_5'` because 4.57 predates the architecture. The
+  other pins (trl 0.23, peft 0.17, accelerate 1.10, torch 2.7,
+  bitsandbytes 0.48, datasets 4.4) place no upper bound on
+  transformers, so no companion bump was needed.
 - Publish-path hardening (first live publish is Wed 2026-11-25 08:00 UTC):
   the version-create handle now uses the BARE variation
   (``monibeefudgekins/qwen3-8-27b-akarui/pytorch/qlora-sft``), never

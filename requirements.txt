@@ -4,14 +4,14 @@
 # pins (~=) allow patch updates within a tested minor line; bump a minor
 # version only after the training smoke test passes on Kaggle.
 #
-# The base model config was saved with transformers 5.8.0.dev0. The
-# runtime must verify the installed transformers supports model_type
-# qwen3_5 before loading Qwen/Qwen3.8-27B; if the pinned transformers
-# here does not, bump it to the first release that does and record the
-# change in CHANGELOG.md.
+# The base model config was saved with transformers 5.8.0.dev0.
+# transformers 5.2.0 is the first release supporting model_type qwen3_5
+# (verified: 5.1.0 lacks the qwen3_5 model, 5.2.0 has it). Pinned here
+# after the eval-baseline kernel v6 failed on 4.57.0 with KeyError
+# 'qwen3_5' while loading Qwen/Qwen3.8-27B (2026-11-21).
 
 torch~=2.7.0
-transformers~=4.57.0
+transformers~=5.2.0
 peft~=0.17.0
 trl~=0.23.0
 accelerate~=1.10.0
