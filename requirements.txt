@@ -13,7 +13,7 @@
 torch~=2.7.0
 torchvision~=0.22.0  # pairs with torch 2.7 (torchvision 0.22.0 requires torch==2.7.0); transformers 5.2's qwen3_5 modeling imports torchvision and needs its nms op registered — eval kernel v7 failed with "operator torchvision::nms does not exist" because torchvision was unpinned and mismatched the pinned torch
 transformers~=5.2.0
-peft~=0.17.0
+peft~=0.21.3
 trl~=0.23.0
 accelerate~=1.10.0
 bitsandbytes~=0.48.0
