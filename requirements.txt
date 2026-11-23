@@ -10,7 +10,7 @@
 # after the eval-baseline kernel v6 failed on 4.57.0 with KeyError
 # 'qwen3_5' while loading Qwen/Qwen3.8-27B (2026-11-21).
 
-torch~=2.7.0
+torch~=2.15.0
 torchvision~=0.22.0  # pairs with torch 2.7 (torchvision 0.22.0 requires torch==2.7.0); transformers 5.2's qwen3_5 modeling imports torchvision and needs its nms op registered — eval kernel v7 failed with "operator torchvision::nms does not exist" because torchvision was unpinned and mismatched the pinned torch
 transformers~=5.2.0
 peft~=0.17.0
