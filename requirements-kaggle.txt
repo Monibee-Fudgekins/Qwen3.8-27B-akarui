@@ -5,6 +5,7 @@
 # deliberately, never auto-bumped; see requirements.txt for the policy.
 
 torch~=2.7.0
+torchvision~=0.22.0  # pairs with torch 2.7; qwen3_5 modeling needs torchvision::nms registered (eval kernel v7 failed without it)
 transformers~=5.2.0  # first release supporting model_type qwen3_5; 4.57 cannot load Qwen/Qwen3.8-27B (eval kernel v6 failed with KeyError 'qwen3_5')
 peft~=0.17.0
 trl~=0.23.0

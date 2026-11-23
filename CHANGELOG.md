@@ -7,6 +7,14 @@ variation version.
 
 ## [Unreleased]
 
+- torchvision ~=0.22.0 added (both requirements files): pairs with the
+  pinned torch 2.7 (torchvision 0.22.0 requires torch==2.7.0). The
+  base-mode eval kernel v7 failed at model load with
+  `RuntimeError: operator torchvision::nms does not exist` — transformers
+  5.2's qwen3_5 modeling imports torchvision and its nms op must be
+  registered, but torchvision was unpinned and mismatched the pinned
+  torch, so its C++ ops never loaded and
+  `Qwen3_5ForConditionalGeneration` was unimportable.
 - transformers 4.57.0 -> 5.2.0 (both requirements files): 5.2.0 is the
   first release supporting model_type `qwen3_5` (verified against the
   5.1.0/5.2.0 tags: 5.1.0 has no qwen3_5 model, 5.2.0 does). The
