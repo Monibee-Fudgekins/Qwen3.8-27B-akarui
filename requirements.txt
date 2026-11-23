@@ -25,4 +25,4 @@ six~=1.17.0  # kaggle 1.7 imports six but does not declare it; without this the 
 pyyaml~=6.0.3
 pandas~=2.3.0
 scikit-learn~=1.7.0
-pytest~=8.4.0
+pytest~=9.2.0
