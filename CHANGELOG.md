@@ -5,6 +5,32 @@ format follows Keep a Changelog; the repository uses semantic
 versioning and Kaggle model versions increment per published
 variation version.
 
+## [0.2.0](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/compare/v0.1.0...v0.2.0) (2026-11-26)
+
+
+### Features
+
+* automated evaluate-and-promote lifecycle with gated Kaggle publication ([b1ce3de](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/b1ce3de09ce39e0dfbc1138df6e19c021b31d1e7))
+* check workflow advances the akarui cycle every 6h ([20ed878](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/20ed878009d3b2673953273b22976d0f7e3a9f42))
+* runtime guard for DPO and GRPO (10h + 600-step cap) ([2dd945b](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/2dd945b38fe7b64308d3a2e8fc8f07776e770a0b))
+* submit-only trigger + cycle check workflow support ([15954e5](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/15954e5ed412d44f3537f77f169927e0dd65e5b9))
+
+
+### Bug Fixes
+
+* add six — kaggle 1.7 imports it but does not declare it (CLI fails to start without it) ([23d68f0](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/23d68f0cb8ea73ed5569baeb1a3042e1d7db1d18))
+* ASCII-only eval kernel titles — Kaggle SaveKernel 400'd on the em-dash ([3d2b5b7](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/3d2b5b7b73cf46b68ee16adaca8376d604e45519))
+* auto-merge condition checks PR author, not who pushed ([646f935](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/646f93519747c0ec637871950a261f5a1dd42107))
+* bump transformers 4.57 -&gt; 5.2.0 (first release with qwen3_5 support) ([a017f11](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/a017f1117753acd7ee25f42a134b9421f6189923))
+* kernel titles must slugify to their ids (Kaggle creates kernel under title-derived slug) + resilient status polling ([85e4583](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/85e45835ec245d024d2e517a8ace29219a98ca0c))
+* kernels install requirements-kaggle.txt at runtime (bitsandbytes missing on Kaggle) ([53d10e2](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/53d10e24aca3c511872005538a5c6a6ad6bb74b5))
+* kernels self-bootstrap from the public repo; eval mode baked at package time ([d8773b8](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/d8773b89be02ab0411e58fb1db12b0104763ff21))
+* pin torchvision 0.22 to match torch 2.7 (qwen3_5 needs torchvision::nms) ([babd6bf](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/babd6bf473c4000c9351a12ad31059336afc3d5a))
+* quota exhaustion at push or kernel start is a graceful skip, not a failure; diagnostic reports API error field ([7f6fc37](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/7f6fc3772b9ef79d510542533a408c607eb2ec63))
+* resolve confirm window at call time so tests can shorten it ([4995fd4](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/4995fd46167289c3a6034f0f02d24d9a60194b4a))
+* restore required shell escaping in auto-merge jq filter ([e826a42](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/e826a42344bd4c0250c31678e026d81e38a5068e))
+* shorten eval kernel titles to &lt;=50 chars (Kaggle SaveKernel 400) + guard both packagers + tests ([d8e5693](https://github.com/Monibee-Fudgekins/Qwen3.8-27B-akarui/commit/d8e5693ff4746f20bdaebbe24a1bedb11ddb413c))
+
 ## [Unreleased]
 
 - torchvision ~=0.22.0 added (both requirements files): pairs with the
